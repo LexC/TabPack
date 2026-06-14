@@ -1,6 +1,8 @@
+// @ts-check
 "use strict";
 
 (function exposeBrowserApi(root) {
+  // Centralize chrome.runtime.lastError handling so callers can use promises.
   function getRuntimeErrorMessage() {
     const error = root.chrome && root.chrome.runtime
       ? root.chrome.runtime.lastError
@@ -8,6 +10,7 @@
     return error && error.message ? error.message : null;
   }
 
+  /** @param {chrome.tabs.CreateProperties} options */
   function createTab(options) {
     return new Promise((resolve, reject) => {
       chrome.tabs.create(options, (tab) => {
@@ -22,6 +25,7 @@
     });
   }
 
+  /** @param {chrome.tabs.QueryInfo} queryInfo */
   function queryTabs(queryInfo) {
     return new Promise((resolve, reject) => {
       chrome.tabs.query(queryInfo, (tabs) => {
@@ -36,6 +40,7 @@
     });
   }
 
+  /** @param {number} groupId */
   function getTabGroup(groupId) {
     return new Promise((resolve, reject) => {
       chrome.tabGroups.get(groupId, (group) => {
@@ -50,6 +55,7 @@
     });
   }
 
+  /** @param {chrome.downloads.DownloadOptions} options */
   function download(options) {
     return new Promise((resolve, reject) => {
       chrome.downloads.download(options, (downloadId) => {
@@ -64,6 +70,7 @@
     });
   }
 
+  /** @param {any} options */
   function executeScript(options) {
     return new Promise((resolve, reject) => {
       chrome.scripting.executeScript(options, (results) => {
@@ -92,6 +99,7 @@
     });
   }
 
+  /** @param {unknown} message */
   function sendRuntimeMessage(message) {
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(message, (response) => {
@@ -106,6 +114,7 @@
     });
   }
 
+  /** @param {chrome.pageCapture.SaveDetails} options */
   function saveAsMHTML(options) {
     return new Promise((resolve, reject) => {
       chrome.pageCapture.saveAsMHTML(options, (blob) => {

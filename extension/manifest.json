@@ -6,10 +6,12 @@
   "permissions": [
     "tabs",
     "tabGroups",
-    "pageCapture",
-    "downloads",
     "scripting",
     "storage"
+  ],
+  "optional_permissions": [
+    "pageCapture",
+    "downloads"
   ],
   "optional_host_permissions": [
     "http://*/*",

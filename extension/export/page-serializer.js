@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 
 function serializeCompleteHtmlInPage(options) {
@@ -8,9 +9,14 @@ function serializeCompleteHtmlInPage(options) {
   const assetFolderName = options.assetFolderName || "";
   const sourceUrl = window.location.href;
   const baseUrl = document.baseURI || sourceUrl;
-  const clone = document.documentElement.cloneNode(true);
+  const clone = createInertDocumentClone();
   const resourcesByUrl = new Map();
   const usedFileNames = new Set();
+
+  function createInertDocumentClone() {
+    const inertDocument = document.implementation.createHTMLDocument(document.title || "");
+    return /** @type {HTMLElement} */ (inertDocument.importNode(document.documentElement, true));
+  }
 
   function shouldSkipUrl(rawUrl) {
     if (!rawUrl) {

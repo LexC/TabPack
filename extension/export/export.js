@@ -1,2486 +1,623 @@
+// @ts-check
 "use strict";
 
-const {
-  ROOT_FOLDER_NAME,
-  MAX_FOLDER_NAME_LENGTH,
-  MAX_ASSET_FILE_NAME_LENGTH,
-  HTML_PAGE_MODE,
-  HTML_LOCAL_ASSET_PATHS_MODE,
-  HTML_RELEVANT_ASSETS_MODE,
-  HTML_ALL_ASSETS_MODE,
-  CSV_MODE,
-  MHTML_MODE,
-  HTML_ASSET_NONE,
-  HTML_ASSET_RELEVANT,
-  HTML_ASSET_ALL,
-  CSV_FILE_NAME,
-  RUN_SERIALIZER_IN_TAB_MESSAGE
-} = globalThis.TabPackConstants;
+/**
+ * Entry point for the TabPack export page. It wires shared helpers, page state,
+ * rendering, destination handling, and export writers without introducing a build step.
+ */
+(function initializeTabPackExportPage(root) {
+  const constants = root.TabPackConstants;
+  const browserApi = root.TabPackBrowserApi;
+  const ExportHelpers = root.TabPackExportHelpers;
 
-const {
-  queryTabs,
-  getTabGroup: getTabGroupById,
-  download,
-  executeScript,
-  executeLegacyTabScript,
-  sendRuntimeMessage,
-  saveAsMHTML,
-  storageGet,
-  storageSet,
-  permissionsContains,
-  permissionsRequest
-} = globalThis.TabPackBrowserApi;
+  const {
+    ROOT_FOLDER_NAME,
+    HTML_PAGE_MODE,
+    HTML_LOCAL_ASSET_PATHS_MODE,
+    HTML_RELEVANT_ASSETS_MODE,
+    HTML_ALL_ASSETS_MODE,
+    CSV_MODE,
+    MHTML_MODE
+  } = constants;
 
-const ExportHelpers = globalThis.TabPackExportHelpers;
-const EXPORT_PREFERENCES_KEY = "exportPreferences";
-const DIRECTORY_DB_NAME = "TabPackDirectoryHandles";
-const DIRECTORY_DB_VERSION = 1;
-const DIRECTORY_STORE_NAME = "handles";
-const DIRECTORY_HANDLE_KEY = "outputDirectory";
+  const { queryTabs, getTabGroup: getTabGroupById, storageGet, storageSet, permissionsContains } = browserApi;
 
-const NO_GROUP_ID = chrome.tabGroups && typeof chrome.tabGroups.TAB_GROUP_ID_NONE === "number"
-  ? chrome.tabGroups.TAB_GROUP_ID_NONE
-  : -1;
+  const EXPORT_PREFERENCES_KEY = "exportPreferences";
+  const NO_GROUP_ID = chrome.tabGroups && typeof chrome.tabGroups.TAB_GROUP_ID_NONE === "number"
+    ? chrome.tabGroups.TAB_GROUP_ID_NONE
+    : -1;
 
-const state = {
-  selectedDirectoryHandle: null,
-  selectedDirectoryWritable: false,
-  exportPlan: null,
-  skippedTabs: [],
-  isExporting: false,
-  stopRequested: false,
-  exportAbortController: null,
-  preferencesLoaded: false,
-  optionalHostPermissionsGranted: false
-};
+  /*
+   * Page state is deliberately centralized here because the export screen is a
+   * single long-lived document. Feature modules receive this object through the
+   * context instead of keeping parallel state that can drift during rescans,
+   * selection changes, or an in-progress export.
+   */
+  /** @type {TabPackExportState} */
+  const state = {
+    selectedDirectoryHandle: null,
+    selectedDirectoryWritable: false,
+    exportPlan: null,
+    skippedTabs: [],
+    isExporting: false,
+    stopRequested: false,
+    exportAbortController: null,
+    preferencesLoaded: false,
+    optionalHostPermissionsGranted: false
+  };
 
-const elements = {};
+  /** @type {TabPackExportElements} */
+  const elements = {};
 
-document.addEventListener("DOMContentLoaded", () => {
-  bindElements();
-  bindEvents();
-  initializeExportPage().catch((error) => {
-    logMessage(`TabPack initialization warning: ${getErrorMessage(error)}`, "warning");
-    initializeDestinationUi();
-    resetCounters();
-    setExportProgressIdle("Export progress will appear here when an export starts.");
-    updateExportAvailability();
-  });
-});
+  /*
+   * Shared dependency bag for the plain-script modules.
+   *
+   * This replaces what imports would normally provide in a bundled app while
+   * preserving the extension's direct script-tag architecture.
+   */
+  /** @type {TabPackExportContext} */
+  const context = {
+    constants,
+    browserApi,
+    ExportHelpers,
+    state,
+    elements,
+    getPathOptions,
+    getSelectedMode,
+    isDownloadsFallbackSelected,
+    shouldExportCsvReport,
+    getCsvSelectedRowCount,
+    buildPlannedRelativePath,
+    throwIfExportStopped,
+    isExportStopError,
+    getErrorMessage,
+    isUserCancellation,
+    refreshPlanDisplay,
+    applyModeAndPaths,
+    saveExportPreferences,
+    renderer: null,
+    destination: null,
+    htmlCapture: null,
+    writer: null
+  };
 
-function bindElements() {
-  elements.scanButton = document.getElementById("scanButton");
-  elements.exportButton = document.getElementById("exportButton");
-  elements.stopExportButton = document.getElementById("stopExportButton");
-  elements.chooseFolderButton = document.getElementById("chooseFolderButton");
-  elements.selectedFolderText = document.getElementById("selectedFolderText");
-  elements.createRootFolder = document.getElementById("createRootFolder");
-  elements.fallbackPanel = document.getElementById("fallbackPanel");
-  elements.fallbackMessage = document.getElementById("fallbackMessage");
-  elements.useDownloadsFallback = document.getElementById("useDownloadsFallback");
-  elements.exportReportCsv = document.getElementById("exportReportCsv");
-  elements.filenameMode = document.getElementById("filenameMode");
-  elements.filenameModeButtons = Array.from(document.querySelectorAll("[data-filename-mode-value]"));
-  elements.conflictBehavior = document.getElementById("conflictBehavior");
-  elements.conflictButtons = Array.from(document.querySelectorAll("[data-conflict-value]"));
-  elements.preview = document.getElementById("preview");
-  elements.skippedTabs = document.getElementById("skippedTabs");
-  elements.skippedSummaryText = document.getElementById("skippedSummaryText");
-  elements.exportProgressPanel = document.getElementById("exportProgressPanel");
-  elements.exportProgressPercent = document.getElementById("exportProgressPercent");
-  elements.exportProgressBar = document.getElementById("exportProgressBar");
-  elements.exportProgressTrack = elements.exportProgressBar ? elements.exportProgressBar.parentElement : null;
-  elements.exportProgressDetail = document.getElementById("exportProgressDetail");
-  elements.progressLog = document.getElementById("progressLog");
-  elements.eligibleCount = document.getElementById("eligibleCount");
-  elements.skippedCount = document.getElementById("skippedCount");
-  elements.successCount = document.getElementById("successCount");
-  elements.failureCount = document.getElementById("failureCount");
-  elements.selectedCount = document.getElementById("selectedCount");
-  elements.modeInputs = Array.from(document.querySelectorAll("input[name='exportMode']"));
-}
+  const htmlCapture = root.TabPackHtmlCapture.create(context);
+  const renderer = root.TabPackExportRenderer.create(context);
+  const destination = root.TabPackExportDestination.create(context);
+  const writer = root.TabPackExportWriter.create(context);
+  context.htmlCapture = htmlCapture;
+  context.renderer = renderer;
+  context.destination = destination;
+  context.writer = writer;
 
-function bindEvents() {
-  elements.scanButton.addEventListener("click", scanGroupedTabs);
-  elements.exportButton.addEventListener("click", exportGroupedTabs);
-  elements.stopExportButton.addEventListener("click", stopExport);
-  elements.chooseFolderButton.addEventListener("click", chooseOutputFolder);
-  elements.createRootFolder.addEventListener("change", () => {
-    saveExportPreferences();
-    refreshPlanDisplay();
-  });
-  elements.useDownloadsFallback.addEventListener("change", () => {
-    saveExportPreferences();
-    updateExportAvailability();
-    refreshPlanDisplay();
-  });
-  elements.exportReportCsv.addEventListener("change", () => {
-    saveExportPreferences();
-    updateExportAvailability();
-    refreshPlanDisplay();
+  /*
+   * Boot only after the DOM exists because every module renders through the
+   * element cache populated by `bindElements()`.
+   */
+  document.addEventListener("DOMContentLoaded", () => {
+    bindElements();
+    bindEvents();
+    initializeExportPage().catch((error) => {
+      renderer.logMessage("TabPack initialization warning: " + getErrorMessage(error), "warning");
+      destination.initializeDestinationUi();
+      renderer.resetCounters();
+      renderer.setExportProgressIdle("Export progress will appear here when an export starts.");
+      renderer.updateExportAvailability();
+    });
   });
 
-  for (const input of elements.modeInputs) {
-    input.addEventListener("change", () => {
+  /** @param {string} id */
+  function getElement(id) {
+    const element = document.getElementById(id);
+    if (!element) {
+      throw new Error(`Missing export page element: ${id}`);
+    }
+
+    return element;
+  }
+
+  /** @param {string} id */
+  function getButtonElement(id) {
+    return /** @type {HTMLButtonElement} */ (getElement(id));
+  }
+
+  /** @param {string} id */
+  function getInputElement(id) {
+    return /** @type {HTMLInputElement} */ (getElement(id));
+  }
+
+  /**
+   * Cache all DOM nodes used by the page.
+   *
+   * Failing fast on a missing element is preferable to a partially initialized
+   * export page, because a stale ID would otherwise show up later as an unrelated
+   * export failure.
+   */
+  function bindElements() {
+    elements.scanButton = getButtonElement("scanButton");
+    elements.exportButton = getButtonElement("exportButton");
+    elements.stopExportButton = getButtonElement("stopExportButton");
+    elements.chooseFolderButton = getButtonElement("chooseFolderButton");
+    elements.selectedFolderText = getElement("selectedFolderText");
+    elements.createRootFolder = getInputElement("createRootFolder");
+    elements.fallbackPanel = getElement("fallbackPanel");
+    elements.fallbackMessage = getElement("fallbackMessage");
+    elements.useDownloadsFallback = getInputElement("useDownloadsFallback");
+    elements.exportReportCsv = getInputElement("exportReportCsv");
+    elements.filenameMode = getInputElement("filenameMode");
+    elements.filenameModeButtons = /** @type {HTMLButtonElement[]} */ (Array.from(document.querySelectorAll("[data-filename-mode-value]")));
+    elements.conflictBehavior = getInputElement("conflictBehavior");
+    elements.conflictButtons = /** @type {HTMLButtonElement[]} */ (Array.from(document.querySelectorAll("[data-conflict-value]")));
+    elements.preview = getElement("preview");
+    elements.skippedTabs = getElement("skippedTabs");
+    elements.skippedSummaryText = getElement("skippedSummaryText");
+    elements.exportProgressPanel = getElement("exportProgressPanel");
+    elements.exportProgressPercent = getElement("exportProgressPercent");
+    elements.exportProgressBar = getElement("exportProgressBar");
+    elements.exportProgressTrack = elements.exportProgressBar.parentElement;
+    elements.exportProgressDetail = getElement("exportProgressDetail");
+    elements.progressLog = getElement("progressLog");
+    elements.eligibleCount = getElement("eligibleCount");
+    elements.skippedCount = getElement("skippedCount");
+    elements.successCount = getElement("successCount");
+    elements.failureCount = getElement("failureCount");
+    elements.selectedCount = getElement("selectedCount");
+    elements.modeInputs = Array.from(document.querySelectorAll("input[name='exportMode']"));
+  }
+
+  /**
+   * Attach UI events after the modules are created so event handlers can call the
+   * destination, writer, and renderer APIs through stable references.
+   */
+  function bindEvents() {
+    elements.scanButton.addEventListener("click", scanGroupedTabs);
+    elements.exportButton.addEventListener("click", exportGroupedTabs);
+    elements.stopExportButton.addEventListener("click", stopExport);
+    elements.chooseFolderButton.addEventListener("click", destination.chooseOutputFolder);
+    elements.createRootFolder.addEventListener("change", () => {
       saveExportPreferences();
       refreshPlanDisplay();
     });
-  }
-
-  for (const button of elements.conflictButtons) {
-    button.addEventListener("click", () => {
-      setConflictBehavior(button.dataset.conflictValue);
+    elements.useDownloadsFallback.addEventListener("change", () => {
       saveExportPreferences();
-    });
-  }
-
-  for (const button of elements.filenameModeButtons) {
-    button.addEventListener("click", () => {
-      setFilenameMode(button.dataset.filenameModeValue);
-      saveExportPreferences();
+      renderer.updateExportAvailability();
       refreshPlanDisplay();
     });
-  }
-}
+    elements.exportReportCsv.addEventListener("change", () => {
+      saveExportPreferences();
+      renderer.updateExportAvailability();
+      refreshPlanDisplay();
+    });
 
-async function initializeExportPage() {
-  await loadExportPreferences();
-  refreshOptionalHostPermissionState();
-  initializeDestinationUi();
-  await restoreRememberedOutputFolder();
-  resetCounters();
-  setExportProgressIdle("Export progress will appear here when an export starts.");
-  updateExportAvailability();
-}
-
-function refreshOptionalHostPermissionState() {
-  permissionsContains({
-    origins: ExportHelpers.getOptionalHostOrigins()
-  }).then((granted) => {
-    state.optionalHostPermissionsGranted = granted;
-  }).catch((_error) => {
-    state.optionalHostPermissionsGranted = false;
-  });
-}
-
-function stopExport() {
-  if (!state.isExporting || state.stopRequested) {
-    return;
-  }
-
-  state.stopRequested = true;
-  if (state.exportAbortController) {
-    state.exportAbortController.abort();
-  }
-  updateExportAvailability();
-  logMessage("Stop requested. TabPack will stop after the current in-flight browser operation ends.", "warning");
-}
-
-function throwIfExportStopped() {
-  if (!state.stopRequested) {
-    return;
-  }
-
-  const error = new Error("Export stopped by user.");
-  error.name = "AbortError";
-  throw error;
-}
-
-function isExportStopError(error) {
-  return Boolean(state.stopRequested && error && (
-    error.name === "AbortError" ||
-    /aborted|cancel|stopped/i.test(getErrorMessage(error))
-  ));
-}
-
-function setConflictBehavior(value) {
-  elements.conflictBehavior.value = value;
-
-  for (const button of elements.conflictButtons) {
-    button.setAttribute("aria-pressed", String(button.dataset.conflictValue === value));
-  }
-}
-
-function setFilenameMode(value) {
-  const mode = value === "title" ? "title" : "numbered";
-  elements.filenameMode.value = mode;
-
-  for (const button of elements.filenameModeButtons) {
-    button.setAttribute("aria-pressed", String(button.dataset.filenameModeValue === mode));
-  }
-}
-
-async function loadExportPreferences() {
-  try {
-    const items = await storageGet(EXPORT_PREFERENCES_KEY);
-    const preferences = items && items[EXPORT_PREFERENCES_KEY] ? items[EXPORT_PREFERENCES_KEY] : {};
-
-    if (isKnownMode(preferences.mode)) {
-      for (const input of elements.modeInputs) {
-        input.checked = input.value === preferences.mode;
-      }
+    for (const input of elements.modeInputs) {
+      input.addEventListener("change", () => {
+        saveExportPreferences();
+        refreshPlanDisplay();
+      });
     }
 
-    if (preferences.conflictBehavior === "overwrite" || preferences.conflictBehavior === "uniquify") {
-      setConflictBehavior(preferences.conflictBehavior);
+    for (const button of elements.conflictButtons) {
+      button.addEventListener("click", () => {
+        setConflictBehavior(button.dataset.conflictValue);
+        saveExportPreferences();
+      });
     }
 
-    if (typeof preferences.createRootFolder === "boolean") {
-      elements.createRootFolder.checked = preferences.createRootFolder;
+    for (const button of elements.filenameModeButtons) {
+      button.addEventListener("click", () => {
+        setFilenameMode(button.dataset.filenameModeValue);
+        saveExportPreferences();
+        refreshPlanDisplay();
+      });
     }
-
-    if (typeof preferences.useDownloadsFallback === "boolean") {
-      elements.useDownloadsFallback.checked = preferences.useDownloadsFallback;
-    }
-
-    if (typeof preferences.exportReportCsv === "boolean") {
-      elements.exportReportCsv.checked = preferences.exportReportCsv;
-    }
-
-    if (preferences.filenameMode === "numbered" || preferences.filenameMode === "title") {
-      setFilenameMode(preferences.filenameMode);
-    }
-
-  } catch (error) {
-    logMessage(`Could not load saved export preferences: ${getErrorMessage(error)}`, "warning");
-  } finally {
-    state.preferencesLoaded = true;
-  }
-}
-
-function saveExportPreferences() {
-  if (!state.preferencesLoaded) {
-    return;
   }
 
-  storageSet({
-    [EXPORT_PREFERENCES_KEY]: {
-      mode: getSelectedMode(),
-      conflictBehavior: elements.conflictBehavior.value,
-      filenameMode: elements.filenameMode.value,
-      exportReportCsv: elements.exportReportCsv.checked,
-      createRootFolder: elements.createRootFolder.checked,
-      useDownloadsFallback: elements.useDownloadsFallback.checked
-    }
-  }).catch((error) => {
-    logMessage(`Could not save export preferences: ${getErrorMessage(error)}`, "warning");
-  });
-}
-
-function isKnownMode(mode) {
-  return mode === HTML_PAGE_MODE ||
-    mode === HTML_LOCAL_ASSET_PATHS_MODE ||
-    mode === HTML_RELEVANT_ASSETS_MODE ||
-    mode === HTML_ALL_ASSETS_MODE ||
-    mode === MHTML_MODE ||
-    mode === CSV_MODE;
-}
-
-function initializeDestinationUi() {
-  if (!supportsFileSystemAccess()) {
-    elements.chooseFolderButton.disabled = true;
-    elements.selectedFolderText.textContent =
-      "User-selected folder export is unavailable because this browser context does not expose showDirectoryPicker().";
-    elements.selectedFolderText.className = "status warning";
-    revealDownloadsFallback("File System Access API folder selection is unavailable here.");
-    logMessage("File System Access API is unavailable. Downloads fallback can be selected explicitly.", "warning");
-    return;
+  /**
+   * Restore preference state, discover destination capability, and render the
+   * idle page. This is intentionally separate from scanning so startup never
+   * performs tab access work until the user asks for it.
+   */
+  async function initializeExportPage() {
+    await loadExportPreferences();
+    refreshOptionalHostPermissionState();
+    destination.initializeDestinationUi();
+    await destination.restoreRememberedOutputFolder();
+    renderer.resetCounters();
+    renderer.setExportProgressIdle("Export progress will appear here when an export starts.");
+    renderer.updateExportAvailability();
   }
 
-  elements.selectedFolderText.textContent = "No output folder selected.";
-  elements.selectedFolderText.className = "status";
-}
-
-async function restoreRememberedOutputFolder() {
-  if (!supportsFileSystemAccess() || typeof indexedDB === "undefined") {
-    return;
+  /**
+   * Cache optional host permission state for the first export attempt.
+   *
+   * The writer still rechecks when a permission request is denied, because
+   * browsers can report already-granted permissions differently after updates.
+   */
+  function refreshOptionalHostPermissionState() {
+    permissionsContains({
+      origins: ExportHelpers.getOptionalHostOrigins()
+    }).then((granted) => {
+      state.optionalHostPermissionsGranted = granted;
+    }).catch((_error) => {
+      state.optionalHostPermissionsGranted = false;
+    });
   }
 
-  try {
-    const directoryHandle = await readRememberedDirectoryHandle();
-    if (!directoryHandle) {
+  /**
+   * Request cooperative cancellation.
+   *
+   * Browser APIs are not all abortable, so the export loop checks this flag
+   * between each awaited operation and uses AbortController only where fetch
+   * supports it.
+   */
+  function stopExport() {
+    if (!state.isExporting || state.stopRequested) {
       return;
     }
 
-    const currentPermission = typeof directoryHandle.queryPermission === "function"
-      ? await directoryHandle.queryPermission({ mode: "readwrite" })
-      : "granted";
+    state.stopRequested = true;
+    if (state.exportAbortController) {
+      state.exportAbortController.abort();
+    }
+    renderer.updateExportAvailability();
+    renderer.logMessage("Stop requested. TabPack will stop after the current in-flight browser operation ends.", "warning");
+  }
 
-    if (currentPermission !== "granted") {
-      elements.selectedFolderText.textContent = "Saved folder needs permission again. Choose folder.";
-      elements.selectedFolderText.className = "status warning";
-      logMessage("Remembered output folder found, but write permission is not currently granted.", "warning");
+  function throwIfExportStopped() {
+    if (!state.stopRequested) {
       return;
     }
 
-    state.selectedDirectoryHandle = directoryHandle;
-    state.selectedDirectoryWritable = true;
-    renderSelectedDirectoryStatus(directoryHandle);
-    logMessage(`Restored remembered output folder name: ${directoryHandle.name || "chosen folder"}.`, "success");
-  } catch (error) {
-    logMessage(`Could not restore remembered output folder: ${getErrorMessage(error)}`, "warning");
-  }
-}
-
-function renderSelectedDirectoryStatus(directoryHandle, label = "Current folder") {
-  elements.selectedFolderText.textContent = `${label}: `;
-
-  const folderName = document.createElement("span");
-  folderName.className = "folder-name";
-  folderName.textContent = directoryHandle.name || "chosen folder";
-  elements.selectedFolderText.append(folderName);
-  elements.selectedFolderText.className = "status good";
-}
-
-function supportsFileSystemAccess() {
-  return typeof window.showDirectoryPicker === "function";
-}
-
-async function chooseOutputFolder() {
-  if (!supportsFileSystemAccess()) {
-    revealDownloadsFallback("File System Access API folder selection is unavailable here.");
-    updateExportAvailability();
-    return;
+    const error = new Error("Export stopped by user.");
+    error.name = "AbortError";
+    throw error;
   }
 
-  try {
-    const directoryHandle = await window.showDirectoryPicker({
-      mode: "readwrite"
-    });
-
-    const hasPermission = await verifyDirectoryPermission(directoryHandle);
-    if (!hasPermission) {
-      throw new Error("Read/write permission was denied for the selected folder.");
-    }
-
-    state.selectedDirectoryHandle = directoryHandle;
-    state.selectedDirectoryWritable = true;
-    elements.useDownloadsFallback.checked = false;
-    renderSelectedDirectoryStatus(directoryHandle);
-    saveExportPreferences();
-    saveRememberedDirectoryHandle(directoryHandle).catch((error) => {
-      logMessage(`Could not remember the selected output folder: ${getErrorMessage(error)}`, "warning");
-    });
-
-    logMessage(`Selected output folder name: ${directoryHandle.name || "chosen folder"}. Full path is not exposed to extension pages.`, "success");
-  } catch (error) {
-    state.selectedDirectoryHandle = null;
-    state.selectedDirectoryWritable = false;
-
-    if (isUserCancellation(error)) {
-      elements.selectedFolderText.textContent = "Folder selection canceled.";
-      elements.selectedFolderText.className = "status";
-      logMessage("Folder selection canceled by user.", "warning");
-    } else {
-      elements.selectedFolderText.textContent = "Selected-folder export is unavailable until another folder is chosen.";
-      elements.selectedFolderText.className = "status error";
-      revealDownloadsFallback(`Selected-folder export failed: ${getErrorMessage(error)}`);
-      logMessage(`Folder selection failed: ${getErrorMessage(error)}`, "error");
-    }
-  } finally {
-    updateExportAvailability();
-    refreshPlanDisplay();
+  function isExportStopError(error) {
+    return Boolean(state.stopRequested && error && (
+      error.name === "AbortError" ||
+      /aborted|cancel|stopped/i.test(getErrorMessage(error))
+    ));
   }
-}
 
-async function verifyDirectoryPermission(directoryHandle) {
-  const options = { mode: "readwrite" };
+  function setConflictBehavior(value) {
+    elements.conflictBehavior.value = value;
 
-  if (typeof directoryHandle.queryPermission === "function") {
-    const currentPermission = await directoryHandle.queryPermission(options);
-    if (currentPermission === "granted") {
-      return true;
+    for (const button of elements.conflictButtons) {
+      button.setAttribute("aria-pressed", String(button.dataset.conflictValue === value));
     }
   }
 
-  if (typeof directoryHandle.requestPermission === "function") {
-    const requestedPermission = await directoryHandle.requestPermission(options);
-    return requestedPermission === "granted";
-  }
+  function setFilenameMode(value) {
+    const mode = value === "title" ? "title" : "numbered";
+    elements.filenameMode.value = mode;
 
-  return true;
-}
-
-function openDirectoryDatabase() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DIRECTORY_DB_NAME, DIRECTORY_DB_VERSION);
-
-    request.onupgradeneeded = () => {
-      const database = request.result;
-      if (!database.objectStoreNames.contains(DIRECTORY_STORE_NAME)) {
-        database.createObjectStore(DIRECTORY_STORE_NAME);
-      }
-    };
-
-    request.onsuccess = () => {
-      resolve(request.result);
-    };
-
-    request.onerror = () => {
-      reject(request.error || new Error("IndexedDB open failed."));
-    };
-  });
-}
-
-async function saveRememberedDirectoryHandle(directoryHandle) {
-  if (typeof indexedDB === "undefined") {
-    return;
-  }
-
-  const database = await openDirectoryDatabase();
-  try {
-    await runDirectoryStoreRequest(database, "readwrite", (store) => {
-      return store.put(directoryHandle, DIRECTORY_HANDLE_KEY);
-    });
-  } finally {
-    database.close();
-  }
-}
-
-async function readRememberedDirectoryHandle() {
-  const database = await openDirectoryDatabase();
-  try {
-    return await runDirectoryStoreRequest(database, "readonly", (store) => {
-      return store.get(DIRECTORY_HANDLE_KEY);
-    });
-  } finally {
-    database.close();
-  }
-}
-
-function runDirectoryStoreRequest(database, mode, makeRequest) {
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(DIRECTORY_STORE_NAME, mode);
-    const request = makeRequest(transaction.objectStore(DIRECTORY_STORE_NAME));
-
-    request.onsuccess = () => {
-      resolve(request.result);
-    };
-
-    request.onerror = () => {
-      reject(request.error || new Error("IndexedDB request failed."));
-    };
-
-    transaction.onerror = () => {
-      reject(transaction.error || new Error("IndexedDB transaction failed."));
-    };
-  });
-}
-
-function revealDownloadsFallback(message) {
-  elements.fallbackPanel.classList.remove("hidden");
-  elements.fallbackMessage.textContent = `${message} Fallback export writes to Downloads/${ROOT_FOLDER_NAME}/.`;
-}
-
-async function scanGroupedTabs() {
-  elements.scanButton.disabled = true;
-  elements.exportButton.disabled = true;
-  state.exportPlan = null;
-  state.skippedTabs = [];
-  setCounter(elements.successCount, 0);
-  setCounter(elements.failureCount, 0);
-  setExportProgressIdle("Scan in progress. Export progress will appear when an export starts.");
-  clearPreview("Scanning grouped tabs...");
-  clearSkippedTabs();
-  logMessage("Starting scan of the current browser window for grouped HTTP/HTTPS tabs.", "start");
-
-  try {
-    const tabs = await queryCurrentWindowTabs();
-    const plan = await buildExportPlan(tabs);
-    state.exportPlan = plan;
-    state.skippedTabs = plan.skippedTabs;
-    updateScanCounters(plan);
-    renderPreview();
-    renderSkippedTabs();
-
-    if (plan.totalEligibleTabs === 0) {
-      logMessage("Scan finished. No eligible grouped HTTP/HTTPS tabs were found.", "warning");
-    } else {
-      logMessage(`Scan finished. ${plan.totalEligibleTabs} eligible grouped tab(s), ${plan.totalSelectedTabs} selected by default, ${plan.skippedTabs.length} skipped.`, "success");
+    for (const button of elements.filenameModeButtons) {
+      button.setAttribute("aria-pressed", String(button.dataset.filenameModeValue === mode));
     }
-  } catch (error) {
-    clearPreview("Scan failed.");
-    logMessage(`Scan failed: ${getErrorMessage(error)}`, "error");
-  } finally {
-    elements.scanButton.disabled = false;
-    updateExportAvailability();
   }
-}
 
-function queryCurrentWindowTabs() {
-  return queryTabs({ currentWindow: true });
-}
-
-async function buildExportPlan(tabs) {
-  const groupIds = ExportHelpers.collectTabGroupIds(tabs, {
-    noGroupId: NO_GROUP_ID
-  });
-  const groupMetadata = await loadTabGroupMetadata(groupIds);
-  return ExportHelpers.buildExportPlanFromTabs(tabs, groupMetadata, getPathOptions());
-}
-
-async function loadTabGroupMetadata(groupIds) {
-  const groupMetadata = new Map();
-
-  for (const groupId of groupIds) {
+  /**
+   * Apply saved UI preferences after validating each value against known modes
+   * and option sets. Unknown values are ignored so old storage cannot break a
+   * newer extension page.
+   */
+  async function loadExportPreferences() {
     try {
-      const group = await getTabGroup(groupId);
-      groupMetadata.set(groupId, group);
+      const items = await storageGet(EXPORT_PREFERENCES_KEY);
+      const preferences = items && items[EXPORT_PREFERENCES_KEY] ? items[EXPORT_PREFERENCES_KEY] : {};
+
+      if (isKnownMode(preferences.mode)) {
+        for (const input of elements.modeInputs) {
+          input.checked = input.value === preferences.mode;
+        }
+      }
+
+      if (preferences.conflictBehavior === "overwrite" || preferences.conflictBehavior === "uniquify") {
+        setConflictBehavior(preferences.conflictBehavior);
+      }
+
+      if (typeof preferences.createRootFolder === "boolean") {
+        elements.createRootFolder.checked = preferences.createRootFolder;
+      }
+
+      if (typeof preferences.useDownloadsFallback === "boolean") {
+        elements.useDownloadsFallback.checked = preferences.useDownloadsFallback;
+      }
+
+      if (typeof preferences.exportReportCsv === "boolean") {
+        elements.exportReportCsv.checked = preferences.exportReportCsv;
+      }
+
+      if (preferences.filenameMode === "numbered" || preferences.filenameMode === "title") {
+        setFilenameMode(preferences.filenameMode);
+      }
+
     } catch (error) {
-      logMessage(`Could not read metadata for tab group ${groupId}: ${getErrorMessage(error)}`, "warning");
+      renderer.logMessage(`Could not load saved export preferences: ${getErrorMessage(error)}`, "warning");
+    } finally {
+      state.preferencesLoaded = true;
     }
   }
 
-  return groupMetadata;
-}
-
-function getTabGroup(groupId) {
-  return getTabGroupById(groupId).then((group) => {
-    if (!group) {
-      throw new Error(`No metadata returned for group ${groupId}.`);
+  /** Persist lightweight UI preferences after initial preference load finishes. */
+  function saveExportPreferences() {
+    if (!state.preferencesLoaded) {
+      return;
     }
 
-    return group;
-  });
-}
+    storageSet({
+      [EXPORT_PREFERENCES_KEY]: {
+        mode: getSelectedMode(),
+        conflictBehavior: elements.conflictBehavior.value,
+        filenameMode: elements.filenameMode.value,
+        exportReportCsv: elements.exportReportCsv.checked,
+        createRootFolder: elements.createRootFolder.checked,
+        useDownloadsFallback: elements.useDownloadsFallback.checked
+      }
+    }).catch((error) => {
+      renderer.logMessage(`Could not save export preferences: ${getErrorMessage(error)}`, "warning");
+    });
+  }
 
-function assignUniqueFolderNames(groups) {
-  const usedNames = new Set();
+  function isKnownMode(mode) {
+    return mode === HTML_PAGE_MODE ||
+      mode === HTML_LOCAL_ASSET_PATHS_MODE ||
+      mode === HTML_RELEVANT_ASSETS_MODE ||
+      mode === HTML_ALL_ASSETS_MODE ||
+      mode === MHTML_MODE ||
+      mode === CSV_MODE;
+  }
 
-  for (const group of groups) {
-    const baseName = sanitizeFolderName(group.originalTitle, group.groupId);
-    let folderName = baseName;
+  /**
+   * Build a fresh export plan for the current window and render the preview.
+   *
+   * Scanning does not write files or request host permissions. It only reads tab
+   * and group metadata so users can review and adjust the selection first.
+   */
+  async function scanGroupedTabs() {
+    elements.scanButton.disabled = true;
+    elements.exportButton.disabled = true;
+    state.exportPlan = null;
+    state.skippedTabs = [];
+    renderer.setCounter(elements.successCount, 0);
+    renderer.setCounter(elements.failureCount, 0);
+    renderer.setExportProgressIdle("Scan in progress. Export progress will appear when an export starts.");
+    renderer.clearPreview("Scanning grouped tabs...");
+    renderer.clearSkippedTabs();
+    renderer.logMessage("Starting scan of the current browser window for grouped HTTP/HTTPS tabs.", "start");
 
-    if (usedNames.has(folderName.toLowerCase())) {
-      folderName = appendGroupSuffix(baseName, group.groupId);
+    try {
+      const tabs = await queryCurrentWindowTabs();
+      const plan = await buildExportPlan(tabs);
+      state.exportPlan = plan;
+      state.skippedTabs = plan.skippedTabs;
+      renderer.updateScanCounters(plan);
+      renderer.renderPreview();
+      renderer.renderSkippedTabs();
+
+      if (plan.totalEligibleTabs === 0) {
+        renderer.logMessage("Scan finished. No eligible grouped HTTP/HTTPS tabs were found.", "warning");
+      } else {
+        renderer.logMessage(`Scan finished. ${plan.totalEligibleTabs} eligible grouped tab(s), ${plan.totalSelectedTabs} selected by default, ${plan.skippedTabs.length} skipped.`, "success");
+      }
+    } catch (error) {
+      renderer.clearPreview("Scan failed.");
+      renderer.logMessage(`Scan failed: ${getErrorMessage(error)}`, "error");
+    } finally {
+      elements.scanButton.disabled = false;
+      renderer.updateExportAvailability();
+    }
+  }
+
+  function queryCurrentWindowTabs() {
+    return queryTabs({ currentWindow: true });
+  }
+
+  /**
+   * Fetch group metadata for the tabs that are actually grouped, then delegate
+   * all pure planning to `TabPackExportHelpers`.
+   */
+  async function buildExportPlan(tabs) {
+    const groupIds = ExportHelpers.collectTabGroupIds(tabs, {
+      noGroupId: NO_GROUP_ID
+    });
+    const groupMetadata = await loadTabGroupMetadata(groupIds);
+    return ExportHelpers.buildExportPlanFromTabs(tabs, groupMetadata, getPathOptions());
+  }
+
+  async function loadTabGroupMetadata(groupIds) {
+    const groupMetadata = new Map();
+
+    for (const groupId of groupIds) {
+      try {
+        const group = await getTabGroup(groupId);
+        groupMetadata.set(groupId, group);
+      } catch (error) {
+        renderer.logMessage(`Could not read metadata for tab group ${groupId}: ${getErrorMessage(error)}`, "warning");
+      }
     }
 
-    while (usedNames.has(folderName.toLowerCase())) {
-      folderName = appendGroupSuffix(folderName, group.groupId);
+    return groupMetadata;
+  }
+
+  function getTabGroup(groupId) {
+    return getTabGroupById(groupId).then((group) => {
+      if (!group) {
+        throw new Error(`No metadata returned for group ${groupId}.`);
+      }
+
+      return group;
+    });
+  }
+
+  /**
+   * Main export orchestration.
+   *
+   * This function handles validation, permission prompts, progress/result state,
+   * and destination selection. Actual file writes are delegated to the writer so
+   * this entrypoint remains a readable lifecycle.
+   */
+  async function exportGroupedTabs() {
+    if (!state.exportPlan || state.exportPlan.totalEligibleTabs === 0) {
+      renderer.logMessage("Export is unavailable until grouped tabs have been scanned.", "warning");
+      renderer.updateExportAvailability();
+      return;
     }
 
-    usedNames.add(folderName.toLowerCase());
-    group.sanitizedFolderName = folderName;
-  }
-}
+    applyModeAndPaths(state.exportPlan);
 
-function sanitizeFolderName(input, groupId) {
-  const fallbackName = `Group_${groupId}`;
-  let sanitized = String(input || fallbackName)
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
-    .trimStart()
-    .replace(/[.\s]+$/g, "");
-
-  if (!sanitized) {
-    sanitized = fallbackName;
-  }
-
-  if (isReservedWindowsName(sanitized)) {
-    sanitized = `${sanitized}_group`;
-  }
-
-  sanitized = trimFolderName(sanitized);
-  return sanitized || fallbackName;
-}
-
-function appendGroupSuffix(baseName, groupId) {
-  const suffix = `__group_${groupId}`;
-  const maxBaseLength = Math.max(1, MAX_FOLDER_NAME_LENGTH - suffix.length);
-  const trimmedBase = trimFolderName(baseName.slice(0, maxBaseLength)) || "Group";
-  return `${trimmedBase}${suffix}`;
-}
-
-function trimFolderName(folderName) {
-  return folderName
-    .slice(0, MAX_FOLDER_NAME_LENGTH)
-    .replace(/[.\s]+$/g, "");
-}
-
-function isReservedWindowsName(name) {
-  return /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i.test(name);
-}
-
-function isSupportedTabUrl(url) {
-  if (!url) {
-    return false;
-  }
-
-  try {
-    const parsedUrl = new URL(url);
-    return parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:";
-  } catch (_error) {
-    return false;
-  }
-}
-
-function makeSkippedTab(tab, reason) {
-  return {
-    reason,
-    tabId: typeof tab.id === "number" ? tab.id : null,
-    groupId: typeof tab.groupId === "number" ? tab.groupId : null,
-    tabIndex: typeof tab.index === "number" ? tab.index : null,
-    title: tab.title || "(untitled)",
-    url: tab.url || "(no URL)"
-  };
-}
-
-async function exportGroupedTabs() {
-  if (!state.exportPlan || state.exportPlan.totalEligibleTabs === 0) {
-    logMessage("Export is unavailable until grouped tabs have been scanned.", "warning");
-    updateExportAvailability();
-    return;
-  }
-
-  applyModeAndPaths(state.exportPlan);
-
-  if (state.exportPlan.totalSelectedTabs === 0) {
-    logMessage("Select at least one grouped HTTP/HTTPS tab before exporting.", "warning");
-    updateExportAvailability();
-    return;
-  }
-
-  if (state.exportPlan.mode === CSV_MODE && !shouldExportCsvReport()) {
-    logMessage("Enable Export report CSV before exporting CSV page index.", "warning");
-    updateExportAvailability();
-    return;
-  }
-
-  try {
-    await ensureOptionalHostPermissionsForExport(state.exportPlan);
-  } catch (error) {
-    logMessage(getErrorMessage(error), "error");
-    updateExportAvailability();
-    return;
-  }
-
-  state.isExporting = true;
-  state.stopRequested = false;
-  state.exportAbortController = typeof AbortController === "function"
-    ? new AbortController()
-    : null;
-  setCounter(elements.successCount, 0);
-  setCounter(elements.failureCount, 0);
-  elements.scanButton.disabled = true;
-  updateExportAvailability();
-
-  renderPreview();
-
-  const result = {
-    exportedAt: new Date().toISOString(),
-    success: 0,
-    failure: 0,
-    assetWarnings: 0,
-    completedItems: 0,
-    totalItems: getExportProgressItemCount(state.exportPlan),
-    progressUnit: "item",
-    pageResults: []
-  };
-  resetExportProgress(result.totalItems, result.progressUnit);
-
-  try {
-    if (isDownloadsFallbackSelected()) {
-      logMessage(`Starting Downloads fallback export to Downloads/${ROOT_FOLDER_NAME}/.`, "start");
-      await exportWithDownloadsFallback(state.exportPlan, result);
-    } else {
-      await ensureSelectedDirectoryReady();
-      logMessage("Starting selected-folder export with the File System Access API.", "start");
-      await exportWithFileSystemAccess(state.exportPlan, result);
+    if (state.exportPlan.totalSelectedTabs === 0) {
+      renderer.logMessage("Select at least one grouped HTTP/HTTPS tab before exporting.", "warning");
+      renderer.updateExportAvailability();
+      return;
     }
 
-    const destinationLabel = isDownloadsFallbackSelected()
-      ? `Downloads/${ROOT_FOLDER_NAME}/ fallback`
-      : "selected output folder";
-    const warningText = result.assetWarnings > 0
-      ? ` ${result.assetWarnings} asset warning(s).`
-      : "";
-    if (state.stopRequested) {
-      logMessage(`Export stopped by user. ${result.success} item(s) succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.${warningText}`, "warning");
-      finishExportProgress(result, "stopped");
-    } else {
-      logMessage(`Export finished to ${destinationLabel}. ${result.success} item(s) succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.${warningText}`, result.failure > 0 ? "warning" : "success");
-      finishExportProgress(result, result.failure > 0 ? "warning" : "done");
+    if (state.exportPlan.mode === CSV_MODE && !shouldExportCsvReport()) {
+      renderer.logMessage("Enable Export report CSV before exporting CSV page index.", "warning");
+      renderer.updateExportAvailability();
+      return;
     }
-  } catch (error) {
-    if (isExportStopError(error)) {
-      logMessage(`Export stopped by user. ${result.success} item(s) succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.`, "warning");
-      finishExportProgress(result, "stopped");
-    } else {
-      logMessage(`Export stopped before completion: ${getErrorMessage(error)}`, "error");
-      finishExportProgress(result, "error");
+
+    try {
+      await writer.ensureOptionalPermissionsForExport(state.exportPlan, {
+        downloadsFallback: isDownloadsFallbackSelected()
+      });
+    } catch (error) {
+      renderer.logMessage(getErrorMessage(error), "error");
+      renderer.updateExportAvailability();
+      return;
     }
-  } finally {
-    state.isExporting = false;
+
+    state.isExporting = true;
     state.stopRequested = false;
-    state.exportAbortController = null;
-    elements.scanButton.disabled = false;
-    setCounter(elements.successCount, result.success);
-    setCounter(elements.failureCount, result.failure);
-    updateExportAvailability();
+    state.exportAbortController = typeof AbortController === "function"
+      ? new AbortController()
+      : null;
+    renderer.setCounter(elements.successCount, 0);
+    renderer.setCounter(elements.failureCount, 0);
+    elements.scanButton.disabled = true;
+    renderer.updateExportAvailability();
+
+    renderer.renderPreview();
+
+    const result = {
+      exportedAt: new Date().toISOString(),
+      success: 0,
+      failure: 0,
+      assetWarnings: 0,
+      completedItems: 0,
+      totalItems: writer.getExportProgressItemCount(state.exportPlan),
+      progressUnit: "item",
+      pageResults: []
+    };
+    renderer.resetExportProgress(result.totalItems, result.progressUnit);
+
+    try {
+      if (isDownloadsFallbackSelected()) {
+        renderer.logMessage(`Starting Downloads fallback export to Downloads/${ROOT_FOLDER_NAME}/.`, "start");
+        await writer.exportWithDownloadsFallback(state.exportPlan, result);
+      } else {
+        await destination.ensureSelectedDirectoryReady();
+        renderer.logMessage("Starting selected-folder export with the File System Access API.", "start");
+        await writer.exportWithFileSystemAccess(state.exportPlan, result);
+      }
+
+      const destinationLabel = isDownloadsFallbackSelected()
+        ? `Downloads/${ROOT_FOLDER_NAME}/ fallback`
+        : "selected output folder";
+      const warningText = result.assetWarnings > 0
+        ? ` ${result.assetWarnings} asset warning(s).`
+        : "";
+      if (state.stopRequested) {
+        renderer.logMessage(`Export stopped by user. ${result.success} item(s) succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.${warningText}`, "warning");
+        renderer.finishExportProgress(result, "stopped");
+      } else {
+        renderer.logMessage(`Export finished to ${destinationLabel}. ${result.success} item(s) succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.${warningText}`, result.failure > 0 ? "warning" : "success");
+        renderer.finishExportProgress(result, result.failure > 0 ? "warning" : "done");
+      }
+    } catch (error) {
+      if (isExportStopError(error)) {
+        renderer.logMessage(`Export stopped by user. ${result.success} item(s) succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.`, "warning");
+        renderer.finishExportProgress(result, "stopped");
+      } else {
+        renderer.logMessage(`Export stopped before completion: ${getErrorMessage(error)}`, "error");
+        renderer.finishExportProgress(result, "error");
+      }
+    } finally {
+      state.isExporting = false;
+      state.stopRequested = false;
+      state.exportAbortController = null;
+      elements.scanButton.disabled = false;
+      renderer.setCounter(elements.successCount, result.success);
+      renderer.setCounter(elements.failureCount, result.failure);
+      renderer.updateExportAvailability();
+    }
   }
-}
 
-async function ensureSelectedDirectoryReady() {
-  if (!state.selectedDirectoryHandle) {
-    throw new Error("Choose an output folder before exporting.");
-  }
-
-  let hasPermission = false;
-
-  try {
-    hasPermission = await verifyDirectoryPermission(state.selectedDirectoryHandle);
-  } catch (error) {
-    state.selectedDirectoryWritable = false;
-    revealDownloadsFallback(`Could not verify write permission for the selected folder: ${getErrorMessage(error)}`);
-    updateExportAvailability();
-    throw error;
-  }
-
-  if (!hasPermission) {
-    state.selectedDirectoryWritable = false;
-    revealDownloadsFallback("Read/write permission was denied for the selected folder.");
-    updateExportAvailability();
-    throw new Error("Read/write permission was denied for the selected folder.");
-  }
-
-  state.selectedDirectoryWritable = true;
-}
-
-async function ensureOptionalHostPermissionsForExport(plan) {
-  if (!ExportHelpers.modeRequiresHostAccess(plan.mode) || plan.totalSelectedTabs === 0) {
-    return;
-  }
-
-  if (state.optionalHostPermissionsGranted) {
-    return;
-  }
-
-  const origins = ExportHelpers.getOptionalHostOrigins();
-  logMessage("HTML export needs page access so TabPack can serialize selected HTTP/HTTPS tabs and fetch referenced assets.", "warning");
-  const granted = await permissionsRequest({ origins });
-  if (!granted) {
-    const alreadyGranted = await permissionsContains({ origins });
-    if (alreadyGranted) {
-      state.optionalHostPermissionsGranted = true;
+  /**
+   * Recalculate filenames/paths after any mode, destination, report, filename, or
+   * selection change, then redraw the preview from the same plan object.
+   */
+  function refreshPlanDisplay() {
+    if (!state.exportPlan) {
+      renderer.updateExportAvailability();
       return;
     }
 
-    throw new Error("HTML export was canceled because page access permission was not granted.");
+    applyModeAndPaths(state.exportPlan);
+    renderer.renderPreview();
+    renderer.updateExportAvailability();
   }
 
-  state.optionalHostPermissionsGranted = true;
-  logMessage("Page access permission granted for HTML export.", "success");
-}
-
-async function exportWithFileSystemAccess(plan, result) {
-  throwIfExportStopped();
-  const exportRootHandle = await getExportRootDirectory(state.selectedDirectoryHandle);
-
-  if (plan.mode === CSV_MODE) {
-    await exportCsvIndexWithFileSystem(exportRootHandle, plan, result);
-    return;
+  /** Apply current UI options to the plan and synchronize summary counters. */
+  function applyModeAndPaths(plan) {
+    ExportHelpers.applyModeAndPaths(plan, getPathOptions());
+    renderer.updateScanCounters(plan);
   }
 
-  for (const group of plan.groups) {
-    throwIfExportStopped();
-    if (group.selectedCount === 0) {
-      continue;
-    }
-
-    let groupDirectoryHandle;
-
-    try {
-      groupDirectoryHandle = await exportRootHandle.getDirectoryHandle(group.sanitizedFolderName, {
-        create: true
-      });
-      logMessage(`Opened folder ${group.sanitizedFolderName}.`, "progress");
-    } catch (error) {
-      const message = `Could not create/open folder ${group.sanitizedFolderName}: ${getErrorMessage(error)}`;
-      logMessage(message, "error");
-      result.failure += group.selectedCount;
-      for (const file of group.files) {
-        if (file.selected) {
-          recordPageResult(result, group, file, {
-            status: "failed",
-            error: message
-          });
-        }
-      }
-      setCounter(elements.failureCount, result.failure);
-      markExportItemsComplete(result, group.selectedCount);
-      continue;
-    }
-
-    for (const file of group.files) {
-      throwIfExportStopped();
-      if (!file.selected) {
-        continue;
-      }
-
-      if (isHtmlSnapshotMode(plan.mode)) {
-        await exportHtmlSnapshotWithFileSystem(groupDirectoryHandle, group, file, plan.mode, result);
-      } else {
-        await exportSingleFileWithFileSystem(groupDirectoryHandle, group, file, plan.mode, result);
-      }
-    }
-  }
-
-  if (shouldExportCsvReport()) {
-    await exportCsvIndexWithFileSystem(exportRootHandle, plan, result);
-  }
-}
-
-async function exportSingleFileWithFileSystem(groupDirectoryHandle, group, file, mode, result) {
-  try {
-    throwIfExportStopped();
-    const blob = await createSingleFileBlob(mode, group, file);
-    throwIfExportStopped();
-    const finalFileName = await resolveFileName(groupDirectoryHandle, file.fileName);
-    await writeBlobToDirectory(groupDirectoryHandle, finalFileName, blob);
-    const finalRelativePath = buildPlannedRelativePath(group.sanitizedFolderName, finalFileName);
-
-    result.success += 1;
-    recordPageResult(result, group, file, {
-      status: "saved",
-      finalRelativePath
-    });
-    setCounter(elements.successCount, result.success);
-    markExportItemsComplete(result);
-    logMessage(`Saved ${group.sanitizedFolderName}/${finalFileName}.`, "success");
-  } catch (error) {
-    if (isExportStopError(error)) {
-      throw error;
-    }
-
-    result.failure += 1;
-    recordPageResult(result, group, file, {
-      status: "failed",
-      error: getErrorMessage(error)
-    });
-    setCounter(elements.failureCount, result.failure);
-    markExportItemsComplete(result);
-    logMessage(`Failed ${group.sanitizedFolderName}/${file.fileName}: ${getErrorMessage(error)}`, "error");
-  }
-}
-
-async function exportCsvIndexWithFileSystem(exportRootHandle, plan, result) {
-  try {
-    throwIfExportStopped();
-    const csvBlob = createCsvBlob(plan, result);
-    throwIfExportStopped();
-    const finalFileName = await resolveFileName(exportRootHandle, CSV_FILE_NAME);
-    await writeBlobToDirectory(exportRootHandle, finalFileName, csvBlob);
-
-    result.success += 1;
-    setCounter(elements.successCount, result.success);
-    markExportItemsComplete(result);
-    logMessage(`Saved ${finalFileName} with ${getCsvSelectedRowCount(plan)} selected page row(s).`, "success");
-  } catch (error) {
-    if (isExportStopError(error)) {
-      throw error;
-    }
-
-    result.failure += 1;
-    setCounter(elements.failureCount, result.failure);
-    markExportItemsComplete(result);
-    logMessage(`Failed selected-page CSV index: ${getErrorMessage(error)}`, "error");
-  }
-}
-
-async function exportHtmlSnapshotWithFileSystem(groupDirectoryHandle, group, file, mode, result) {
-  const modeLabel = getHtmlModeLogLabel(mode);
-  const usesAssetFolder = isHtmlAssetMode(mode);
-
-  try {
-    throwIfExportStopped();
-    if (!usesAssetFolder) {
-      const finalFileName = await resolveFileName(groupDirectoryHandle, file.fileName);
-      logMessage(`Capturing ${modeLabel} for ${group.sanitizedFolderName}/${finalFileName}.`, "progress");
-      const htmlPackage = await createCompleteHtmlPackage(group, file, file.referenceAssetFolderName, mode);
-      throwIfExportStopped();
-      await writeBlobToDirectory(groupDirectoryHandle, finalFileName, htmlPackage.htmlBlob);
-      const finalRelativePath = buildPlannedRelativePath(group.sanitizedFolderName, finalFileName);
-
-      result.success += 1;
-      recordPageResult(result, group, file, {
-        status: "saved",
-        finalRelativePath,
-        assetWarnings: htmlPackage.failures.length
-      });
-      result.assetWarnings += htmlPackage.failures.length;
-      setCounter(elements.successCount, result.success);
-      markExportItemsComplete(result);
-      logMessage(`Saved ${group.sanitizedFolderName}/${finalFileName}.`, "success");
-      logAssetWarnings(htmlPackage.failures, [], group.sanitizedFolderName);
-      return;
-    }
-
-    const outputNames = await resolveCompleteOutputNames(groupDirectoryHandle, file);
-    logMessage(`Capturing ${modeLabel} for ${group.sanitizedFolderName}/${outputNames.fileName}.`, "progress");
-    const htmlPackage = await createCompleteHtmlPackage(group, file, outputNames.assetFolderName, mode);
-    throwIfExportStopped();
-    const writeFailures = await writeCompleteHtmlPackage(groupDirectoryHandle, outputNames, htmlPackage);
-    const warningCount = htmlPackage.failures.length + writeFailures.length;
-    const finalRelativePath = buildPlannedRelativePath(group.sanitizedFolderName, outputNames.fileName);
-    const finalAssetFolderPath = buildPlannedRelativePath(group.sanitizedFolderName, `${outputNames.assetFolderName}/`);
-
-    result.success += 1;
-    result.assetWarnings += warningCount;
-    recordPageResult(result, group, file, {
-      status: "saved",
-      finalRelativePath,
-      finalAssetFolderPath,
-      assetWarnings: warningCount
-    });
-    setCounter(elements.successCount, result.success);
-    markExportItemsComplete(result);
-    logMessage(`Saved ${group.sanitizedFolderName}/${outputNames.fileName} and ${group.sanitizedFolderName}/${outputNames.assetFolderName}/.`, "success");
-    logAssetWarnings(htmlPackage.failures, writeFailures, `${group.sanitizedFolderName}/${outputNames.assetFolderName}`);
-  } catch (error) {
-    if (isExportStopError(error)) {
-      throw error;
-    }
-
-    result.failure += 1;
-    recordPageResult(result, group, file, {
-      status: "failed",
-      error: getErrorMessage(error)
-    });
-    setCounter(elements.failureCount, result.failure);
-    markExportItemsComplete(result);
-    logMessage(`Failed ${modeLabel} export for ${group.sanitizedFolderName}/${file.fileName}: ${getErrorMessage(error)}`, "error");
-  }
-}
-
-async function getExportRootDirectory(selectedDirectoryHandle) {
-  if (!elements.createRootFolder.checked) {
-    return selectedDirectoryHandle;
-  }
-
-  return selectedDirectoryHandle.getDirectoryHandle(ROOT_FOLDER_NAME, {
-    create: true
-  });
-}
-
-async function resolveFileName(directoryHandle, requestedFileName) {
-  throwIfExportStopped();
-  if (elements.conflictBehavior.value === "overwrite") {
-    await removeEntryIfExists(directoryHandle, requestedFileName);
-    return requestedFileName;
-  }
-
-  const { baseName, extension } = splitFileName(requestedFileName);
-  let candidate = requestedFileName;
-  let counter = 1;
-
-  while (await entryExists(directoryHandle, candidate)) {
-    throwIfExportStopped();
-    candidate = `${baseName} (${counter})${extension}`;
-    counter += 1;
-  }
-
-  return candidate;
-}
-
-async function resolveCompleteOutputNames(directoryHandle, file) {
-  throwIfExportStopped();
-  if (elements.conflictBehavior.value === "overwrite") {
-    await removeEntryIfExists(directoryHandle, file.fileName);
-    await removeEntryIfExists(directoryHandle, file.assetFolderName);
+  /** Gather the current UI options in the shape expected by export helpers. */
+  function getPathOptions() {
     return {
-      fileName: file.fileName,
-      assetFolderName: file.assetFolderName
+      mode: getSelectedMode(),
+      filenameMode: elements.filenameMode.value,
+      rootFolderName: ROOT_FOLDER_NAME,
+      createRootFolder: elements.createRootFolder.checked,
+      downloadsFallback: isDownloadsFallbackSelected(),
+      noGroupId: NO_GROUP_ID
     };
   }
 
-  let counter = 0;
+  function buildPlannedRelativePath(groupFolderName, fileName) {
+    return ExportHelpers.buildPlannedRelativePath(groupFolderName, fileName, getPathOptions());
+  }
 
-  while (true) {
-    throwIfExportStopped();
-    const baseName = counter === 0
-      ? file.baseFileName
-      : `${file.baseFileName} (${counter})`;
-    const candidateFileName = `${baseName}.html`;
-    const candidateAssetFolderName = `${baseName}_files`;
-    const fileConflict = await entryExists(directoryHandle, candidateFileName);
-    const folderConflict = await entryExists(directoryHandle, candidateAssetFolderName);
+  function getSelectedMode() {
+    const selectedInput = elements.modeInputs.find((input) => input.checked);
+    return selectedInput ? selectedInput.value : HTML_RELEVANT_ASSETS_MODE;
+  }
 
-    if (!fileConflict && !folderConflict) {
-      return {
-        fileName: candidateFileName,
-        assetFolderName: candidateAssetFolderName
-      };
+  function isDownloadsFallbackSelected() {
+    return !elements.fallbackPanel.classList.contains("hidden") && elements.useDownloadsFallback.checked;
+  }
+
+  function shouldExportCsvReport() {
+    return Boolean(elements.exportReportCsv && elements.exportReportCsv.checked);
+  }
+
+  function getCsvSelectedRowCount(plan) {
+    return ExportHelpers.getSelectedCsvRowCount(plan);
+  }
+
+  function getErrorMessage(error) {
+    if (!error) {
+      return "Unknown error";
     }
 
-    counter += 1;
+    return error.message || String(error);
   }
-}
 
-function splitFileName(fileName) {
-  const dotIndex = fileName.lastIndexOf(".");
-  if (dotIndex <= 0) {
-    return {
-      baseName: fileName,
-      extension: ""
-    };
+  function isUserCancellation(error) {
+    return error && (error.name === "AbortError" || /aborted|cancel/i.test(getErrorMessage(error)));
   }
-
-  return {
-    baseName: fileName.slice(0, dotIndex),
-    extension: fileName.slice(dotIndex)
-  };
-}
-
-async function entryExists(directoryHandle, entryName) {
-  try {
-    await directoryHandle.getFileHandle(entryName, {
-      create: false
-    });
-    return true;
-  } catch (error) {
-    if (error && error.name === "TypeMismatchError") {
-      return true;
-    }
-
-    if (!error || error.name !== "NotFoundError") {
-      throw error;
-    }
-  }
-
-  try {
-    await directoryHandle.getDirectoryHandle(entryName, {
-      create: false
-    });
-    return true;
-  } catch (error) {
-    if (error && error.name === "TypeMismatchError") {
-      return true;
-    }
-
-    if (error && error.name === "NotFoundError") {
-      return false;
-    }
-
-    throw error;
-  }
-}
-
-async function removeEntryIfExists(directoryHandle, entryName) {
-  try {
-    await directoryHandle.removeEntry(entryName, {
-      recursive: true
-    });
-  } catch (error) {
-    if (!error || error.name !== "NotFoundError") {
-      throw error;
-    }
-  }
-}
-
-async function writeCompleteHtmlPackage(groupDirectoryHandle, outputNames, htmlPackage) {
-  const writeFailures = [];
-  throwIfExportStopped();
-  const assetDirectoryHandle = await groupDirectoryHandle.getDirectoryHandle(outputNames.assetFolderName, {
-    create: true
-  });
-
-  for (const asset of htmlPackage.assets) {
-    throwIfExportStopped();
-    try {
-      await writeBlobToDirectory(assetDirectoryHandle, asset.fileName, asset.blob);
-    } catch (error) {
-      if (isExportStopError(error)) {
-        throw error;
-      }
-
-      writeFailures.push({
-        url: asset.url,
-        fileName: asset.fileName,
-        error: getErrorMessage(error)
-      });
-    }
-  }
-
-  throwIfExportStopped();
-  await writeBlobToDirectory(groupDirectoryHandle, outputNames.fileName, htmlPackage.htmlBlob);
-  return writeFailures;
-}
-
-async function writeBlobToDirectory(directoryHandle, fileName, blob) {
-  throwIfExportStopped();
-  const fileHandle = await directoryHandle.getFileHandle(fileName, {
-    create: true
-  });
-  throwIfExportStopped();
-  const writable = await fileHandle.createWritable({
-    keepExistingData: false
-  });
-
-  try {
-    throwIfExportStopped();
-    await writable.write(blob);
-    await writable.close();
-  } catch (error) {
-    try {
-      await writable.abort();
-    } catch (_abortError) {
-      // Nothing else can be done once the writer itself fails.
-    }
-
-    throw error;
-  }
-}
-
-async function exportWithDownloadsFallback(plan, result) {
-  throwIfExportStopped();
-  if (plan.mode === CSV_MODE) {
-    await exportCsvIndexWithDownloadsFallback(plan, result);
-    return;
-  }
-
-  if (isHtmlAssetMode(plan.mode)) {
-    logMessage("Downloads fallback uses browser conflict handling for each downloaded file; selected-folder export keeps HTML/assets pairs together more reliably.", "warning");
-  }
-
-  for (const group of plan.groups) {
-    throwIfExportStopped();
-    for (const file of group.files) {
-      throwIfExportStopped();
-      if (!file.selected) {
-        continue;
-      }
-
-      if (isHtmlSnapshotMode(plan.mode)) {
-        await exportHtmlSnapshotWithDownloadsFallback(group, file, plan.mode, result);
-      } else {
-        await exportSingleFileWithDownloadsFallback(group, file, plan.mode, result);
-      }
-    }
-  }
-
-  if (shouldExportCsvReport()) {
-    await exportCsvIndexWithDownloadsFallback(plan, result);
-  }
-}
-
-async function exportSingleFileWithDownloadsFallback(group, file, mode, result) {
-  try {
-    throwIfExportStopped();
-    const blob = await createSingleFileBlob(mode, group, file);
-    throwIfExportStopped();
-    const filename = `${ROOT_FOLDER_NAME}/${group.sanitizedFolderName}/${file.fileName}`;
-    await downloadBlob(blob, filename);
-
-    result.success += 1;
-    recordPageResult(result, group, file, {
-      status: "queued",
-      requestedRelativePath: filename,
-      finalRelativePath: filename
-    });
-    setCounter(elements.successCount, result.success);
-    markExportItemsComplete(result);
-    logMessage(`Queued fallback download ${filename}.`, "success");
-  } catch (error) {
-    if (isExportStopError(error)) {
-      throw error;
-    }
-
-    result.failure += 1;
-    recordPageResult(result, group, file, {
-      status: "failed",
-      requestedRelativePath: `${ROOT_FOLDER_NAME}/${group.sanitizedFolderName}/${file.fileName}`,
-      error: getErrorMessage(error)
-    });
-    setCounter(elements.failureCount, result.failure);
-    markExportItemsComplete(result);
-    logMessage(`Fallback failed ${group.sanitizedFolderName}/${file.fileName}: ${getErrorMessage(error)}`, "error");
-  }
-}
-
-async function exportCsvIndexWithDownloadsFallback(plan, result) {
-  try {
-    throwIfExportStopped();
-    const csvBlob = createCsvBlob(plan, result);
-    throwIfExportStopped();
-    const filename = `${ROOT_FOLDER_NAME}/${CSV_FILE_NAME}`;
-    await downloadBlob(csvBlob, filename);
-
-    result.success += 1;
-    setCounter(elements.successCount, result.success);
-    markExportItemsComplete(result);
-    logMessage(`Queued fallback download ${filename} with ${getCsvSelectedRowCount(plan)} selected page row(s).`, "success");
-  } catch (error) {
-    if (isExportStopError(error)) {
-      throw error;
-    }
-
-    result.failure += 1;
-    setCounter(elements.failureCount, result.failure);
-    markExportItemsComplete(result);
-    logMessage(`Fallback selected-page CSV index failed: ${getErrorMessage(error)}`, "error");
-  }
-}
-
-async function exportHtmlSnapshotWithDownloadsFallback(group, file, mode, result) {
-  const modeLabel = getHtmlModeLogLabel(mode);
-  const usesAssetFolder = isHtmlAssetMode(mode);
-
-  try {
-    throwIfExportStopped();
-    logMessage(`Capturing ${modeLabel} for fallback ${group.sanitizedFolderName}/${file.fileName}.`, "progress");
-    const referenceAssetFolderName = usesAssetFolder
-      ? file.assetFolderName
-      : file.referenceAssetFolderName;
-    const htmlPackage = await createCompleteHtmlPackage(group, file, referenceAssetFolderName, mode);
-    throwIfExportStopped();
-    const htmlFilename = `${ROOT_FOLDER_NAME}/${group.sanitizedFolderName}/${file.fileName}`;
-    await downloadBlob(htmlPackage.htmlBlob, htmlFilename);
-
-    if (usesAssetFolder) {
-      for (const asset of htmlPackage.assets) {
-        throwIfExportStopped();
-        const assetFilename = `${ROOT_FOLDER_NAME}/${group.sanitizedFolderName}/${file.assetFolderName}/${asset.fileName}`;
-        try {
-          await downloadBlob(asset.blob, assetFilename);
-        } catch (error) {
-          if (isExportStopError(error)) {
-            throw error;
-          }
-
-          htmlPackage.failures.push({
-            url: asset.url,
-            fileName: asset.fileName,
-            error: getErrorMessage(error)
-          });
-        }
-      }
-    }
-
-    result.success += 1;
-    result.assetWarnings += htmlPackage.failures.length;
-    recordPageResult(result, group, file, {
-      status: "queued",
-      requestedRelativePath: htmlFilename,
-      finalRelativePath: htmlFilename,
-      finalAssetFolderPath: usesAssetFolder
-        ? `${ROOT_FOLDER_NAME}/${group.sanitizedFolderName}/${file.assetFolderName}/`
-        : "",
-      assetWarnings: htmlPackage.failures.length
-    });
-    setCounter(elements.successCount, result.success);
-    markExportItemsComplete(result);
-    if (usesAssetFolder) {
-      logMessage(`Queued fallback downloads for ${htmlFilename} and ${file.assetFolderName}/.`, "success");
-      logAssetWarnings(htmlPackage.failures, [], `${group.sanitizedFolderName}/${file.assetFolderName}`);
-    } else {
-      logMessage(`Queued fallback download ${htmlFilename}.`, "success");
-    }
-  } catch (error) {
-    if (isExportStopError(error)) {
-      throw error;
-    }
-
-    result.failure += 1;
-    recordPageResult(result, group, file, {
-      status: "failed",
-      requestedRelativePath: `${ROOT_FOLDER_NAME}/${group.sanitizedFolderName}/${file.fileName}`,
-      error: getErrorMessage(error)
-    });
-    setCounter(elements.failureCount, result.failure);
-    markExportItemsComplete(result);
-    logMessage(`Fallback ${modeLabel} failed ${group.sanitizedFolderName}/${file.fileName}: ${getErrorMessage(error)}`, "error");
-  }
-}
-
-async function downloadBlob(blob, filename) {
-  throwIfExportStopped();
-  const objectUrl = URL.createObjectURL(blob);
-
-  try {
-    await downloadBlobUrl(objectUrl, filename);
-  } finally {
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
-  }
-}
-
-function downloadBlobUrl(url, filename) {
-  throwIfExportStopped();
-  const conflictAction = elements.conflictBehavior.value === "overwrite" ? "overwrite" : "uniquify";
-
-  return download({
-    url,
-    filename,
-    conflictAction,
-    saveAs: false
-  }).then((downloadId) => {
-    if (typeof downloadId !== "number") {
-      throw new Error("The browser did not return a download ID.");
-    }
-
-    return downloadId;
-  });
-}
-
-async function createSingleFileBlob(mode, group, file) {
-  if (mode === MHTML_MODE) {
-    return saveTabAsMhtml(file.tabId);
-  }
-
-  throw new Error(`Unsupported single-file export mode: ${mode}`);
-}
-
-function createCsvBlob(plan, result) {
-  return new Blob([generateCsvIndex(plan, result)], {
-    type: "text/csv;charset=utf-8"
-  });
-}
-
-function generateCsvIndex(plan, result) {
-  return ExportHelpers.generateCsvIndex(plan, {
-    exportedAt: result && result.exportedAt,
-    pageResults: result && result.pageResults
-  });
-}
-
-function getCsvSelectedRowCount(plan) {
-  return ExportHelpers.getSelectedCsvRowCount(plan);
-}
-
-function recordPageResult(result, group, file, details = {}) {
-  result.pageResults.push({
-    selectionKey: file.selectionKey,
-    groupId: group.groupId,
-    tabId: file.tabId,
-    status: details.status || "",
-    plannedRelativePath: file.plannedRelativePath,
-    plannedAssetFolderPath: file.plannedAssetFolderPath || file.plannedReferenceAssetFolderPath,
-    requestedRelativePath: details.requestedRelativePath || "",
-    finalRelativePath: details.finalRelativePath || "",
-    finalAssetFolderPath: details.finalAssetFolderPath || "",
-    assetWarnings: details.assetWarnings || 0,
-    error: details.error || ""
-  });
-}
-
-function getExportProgressItemCount(plan) {
-  const reportFileCount = shouldExportCsvReport() ? 1 : 0;
-  const pageCount = plan.mode === CSV_MODE ? 0 : plan.totalSelectedTabs;
-  return pageCount + reportFileCount;
-}
-
-function shouldExportCsvReport() {
-  return Boolean(elements.exportReportCsv && elements.exportReportCsv.checked);
-}
-
-async function createCompleteHtmlPackage(group, file, assetFolderName, mode) {
-  throwIfExportStopped();
-  const serializerAssetMode = getHtmlSerializerAssetMode(mode);
-  const fetchAssetMode = getHtmlFetchAssetMode(mode);
-  const capturedPage = await captureCompleteHtmlSnapshot(file.tabId, assetFolderName, serializerAssetMode);
-  throwIfExportStopped();
-  const context = createAssetContext(assetFolderName, fetchAssetMode);
-
-  if (shouldDownloadHtmlAssets(mode)) {
-    for (const resource of capturedPage.resources) {
-      throwIfExportStopped();
-      await ensureAsset(resource.url, resource.fileName, resource.kind, context);
-    }
-  }
-
-  throwIfExportStopped();
-  const htmlWithMetadata = addExportMetadataComment(capturedPage.html, group, file, context.failures.length, mode);
-
-  return {
-    htmlBlob: new Blob([htmlWithMetadata], {
-      type: "text/html;charset=utf-8"
-    }),
-    assets: context.assets,
-    failures: context.failures
-  };
-}
-
-function captureCompleteHtmlSnapshot(tabId, assetFolderName, assetMode) {
-  const options = {
-    assetFolderName,
-    assetMode
-  };
-
-  return executeSerializerInTab(tabId, options).then((capturedPage) => {
-    if (!capturedPage || typeof capturedPage.html !== "string" || !Array.isArray(capturedPage.resources)) {
-      throw new Error("The page serializer did not return an HTML snapshot.");
-    }
-
-    return capturedPage;
-  });
-}
-
-function executeSerializerInTab(tabId, options) {
-  const scriptingApi = getScriptingApi();
-  if (scriptingApi && typeof scriptingApi.executeScript === "function") {
-    return executeSerializerWithScriptingApi(scriptingApi, tabId, options);
-  }
-
-  if (chrome.tabs && typeof chrome.tabs.executeScript === "function") {
-    return executeSerializerWithLegacyTabsApi(tabId, options);
-  }
-
-  if (chrome.runtime && typeof chrome.runtime.sendMessage === "function") {
-    return executeSerializerWithBackground(tabId, options);
-  }
-
-  return Promise.reject(new Error(
-    "HTML export requires the scripting API or the background serializer. Reload TabPack from your browser extensions page after updating the extension, then reopen TabPack."
-  ));
-}
-
-function getScriptingApi() {
-  if (typeof chrome !== "undefined" && chrome.scripting) {
-    return {
-      api: chrome.scripting,
-      style: "callback"
-    };
-  }
-
-  if (typeof browser !== "undefined" && browser.scripting) {
-    return {
-      api: browser.scripting,
-      style: "promise"
-    };
-  }
-
-  return null;
-}
-
-function executeSerializerWithScriptingApi(scriptingApiInfo, tabId, options) {
-  const executeOptions = {
-    target: {
-      tabId
-    },
-    func: serializeCompleteHtmlInPage,
-    args: [
-      options
-    ]
-  };
-
-  if (scriptingApiInfo.style === "promise") {
-    return scriptingApiInfo.api.executeScript(executeOptions).then((results) => {
-      const firstResult = Array.isArray(results) ? results[0] : null;
-      return firstResult ? firstResult.result : null;
-    });
-  }
-
-  return executeScript(executeOptions).then((results) => {
-    const firstResult = Array.isArray(results) ? results[0] : null;
-    return firstResult ? firstResult.result : null;
-  });
-}
-
-function executeSerializerWithLegacyTabsApi(tabId, options) {
-  const code = `(${serializeCompleteHtmlInPage.toString()})(${JSON.stringify(options)})`;
-  return executeLegacyTabScript(tabId, {
-    code,
-    runAt: "document_idle"
-  }).then((results) => {
-    return Array.isArray(results) ? results[0] : null;
-  });
-}
-
-function executeSerializerWithBackground(tabId, options) {
-  return sendRuntimeMessage({
-    type: RUN_SERIALIZER_IN_TAB_MESSAGE,
-    tabId,
-    options
-  }).catch((error) => {
-    throw new Error(formatBackgroundSerializerError(error.message));
-  }).then((response) => {
-    if (!response) {
-      throw new Error("The background serializer returned no response.");
-    }
-
-    if (!response.ok) {
-      throw new Error(response.error || "The background serializer failed.");
-    }
-
-    return response.result || null;
-  });
-}
-
-function formatBackgroundSerializerError(message) {
-  const details = String(message || "").trim();
-  if (/receiving end does not exist/i.test(details)) {
-    return "The background serializer is not available. Reload TabPack from your browser extensions page, then reopen TabPack.";
-  }
-
-  return details
-    ? `The background serializer failed: ${details}`
-    : "The background serializer failed.";
-}
-
-function createAssetContext(assetFolderName, assetMode) {
-  return {
-    assetFolderName,
-    assetMode: assetMode || HTML_ASSET_ALL,
-    usedFileNames: new Set(),
-    assetPromisesByUrl: new Map(),
-    assets: [],
-    failures: []
-  };
-}
-
-async function ensureAsset(rawUrl, preferredFileName, kind, context) {
-  throwIfExportStopped();
-  const absoluteUrl = normalizeFetchableAssetUrl(rawUrl);
-  if (!absoluteUrl) {
-    return null;
-  }
-
-  if (context.assetPromisesByUrl.has(absoluteUrl)) {
-    return context.assetPromisesByUrl.get(absoluteUrl);
-  }
-
-  const fileName = preferredFileName
-    ? reservePreferredAssetFileName(preferredFileName, context)
-    : allocateAssetFileName(absoluteUrl, kind, context);
-
-  const assetPromise = (async () => {
-    try {
-      const blob = await fetchAssetAsBlob(absoluteUrl, kind, context);
-      context.assets.push({
-        url: absoluteUrl,
-        fileName,
-        blob
-      });
-      return fileName;
-    } catch (error) {
-      if (isExportStopError(error)) {
-        throw error;
-      }
-
-      context.failures.push({
-        url: absoluteUrl,
-        fileName,
-        error: getErrorMessage(error)
-      });
-      return null;
-    }
-  })();
-
-  context.assetPromisesByUrl.set(absoluteUrl, assetPromise);
-  return assetPromise;
-}
-
-function normalizeFetchableAssetUrl(rawUrl) {
-  if (!rawUrl) {
-    return null;
-  }
-
-  try {
-    const parsedUrl = new URL(rawUrl);
-    if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
-      return null;
-    }
-
-    return parsedUrl.href;
-  } catch (_error) {
-    return null;
-  }
-}
-
-function reservePreferredAssetFileName(fileName, context) {
-  const sanitized = trimAssetFileName(sanitizeAssetFileName(fileName)) || "asset";
-
-  if (!context.usedFileNames.has(sanitized.toLowerCase())) {
-    context.usedFileNames.add(sanitized.toLowerCase());
-    return sanitized;
-  }
-
-  return uniquifyAssetFileName(sanitized, context);
-}
-
-function allocateAssetFileName(absoluteUrl, kind, context) {
-  const fallbackExtension = getFallbackExtension(kind);
-  let candidate = "";
-
-  try {
-    const parsedUrl = new URL(absoluteUrl);
-    const pathname = parsedUrl.pathname;
-    const lastSegment = pathname.slice(pathname.lastIndexOf("/") + 1);
-    candidate = decodeURIComponent(lastSegment || "");
-  } catch (_error) {
-    candidate = "";
-  }
-
-  candidate = sanitizeAssetFileName(candidate);
-
-  if (!candidate) {
-    candidate = `asset${fallbackExtension}`;
-  } else if (!candidate.includes(".") && fallbackExtension) {
-    candidate = `${candidate}${fallbackExtension}`;
-  }
-
-  return uniquifyAssetFileName(candidate, context);
-}
-
-function sanitizeAssetFileName(fileName) {
-  const sanitized = String(fileName)
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
-    .replace(/^\.+/g, "")
-    .replace(/[.\s]+$/g, "")
-    .trim();
-  return isReservedWindowsName(sanitized) ? `${sanitized}_asset` : sanitized;
-}
-
-function trimAssetFileName(fileName) {
-  if (fileName.length <= MAX_ASSET_FILE_NAME_LENGTH) {
-    return fileName;
-  }
-
-  const dotIndex = fileName.lastIndexOf(".");
-  if (dotIndex > 0 && dotIndex > fileName.length - 16) {
-    const extension = fileName.slice(dotIndex);
-    return fileName
-      .slice(0, MAX_ASSET_FILE_NAME_LENGTH - extension.length)
-      .replace(/[.\s]+$/g, "") + extension;
-  }
-
-  return fileName.slice(0, MAX_ASSET_FILE_NAME_LENGTH).replace(/[.\s]+$/g, "");
-}
-
-function uniquifyAssetFileName(fileName, context) {
-  const splitName = splitFileName(trimAssetFileName(fileName || "asset") || "asset");
-  let candidate = `${splitName.baseName}${splitName.extension}`;
-  let counter = 1;
-
-  while (context.usedFileNames.has(candidate.toLowerCase())) {
-    candidate = `${splitName.baseName} (${counter})${splitName.extension}`;
-    candidate = trimAssetFileName(candidate);
-    counter += 1;
-  }
-
-  context.usedFileNames.add(candidate.toLowerCase());
-  return candidate;
-}
-
-function getFallbackExtension(kind) {
-  if (kind === "style") {
-    return ".css";
-  }
-
-  if (kind === "script") {
-    return ".js";
-  }
-
-  if (kind === "manifest") {
-    return ".webmanifest";
-  }
-
-  return "";
-}
-
-async function fetchAssetAsBlob(absoluteUrl, kind, context) {
-  throwIfExportStopped();
-  const response = await fetch(absoluteUrl, {
-    credentials: "include",
-    cache: "force-cache",
-    signal: state.exportAbortController ? state.exportAbortController.signal : undefined
-  });
-  throwIfExportStopped();
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} ${response.statusText || ""}`.trim());
-  }
-
-  const contentType = response.headers.get("content-type") || "";
-
-  if (kind === "style" || looksLikeCssAsset(absoluteUrl, contentType)) {
-    const cssText = await response.text();
-    throwIfExportStopped();
-    const rewrittenCss = context.assetMode === HTML_ASSET_ALL
-      ? await rewriteCssAssetUrls(cssText, absoluteUrl, context)
-      : absolutizeCssAssetUrls(cssText, absoluteUrl);
-    return new Blob([rewrittenCss], {
-      type: contentType || "text/css;charset=utf-8"
-    });
-  }
-
-  const blob = await response.blob();
-  throwIfExportStopped();
-  return blob;
-}
-
-function looksLikeCssAsset(absoluteUrl, contentType) {
-  if (/text\/css/i.test(contentType)) {
-    return true;
-  }
-
-  try {
-    return new URL(absoluteUrl).pathname.toLowerCase().endsWith(".css");
-  } catch (_error) {
-    return false;
-  }
-}
-
-async function rewriteCssAssetUrls(cssText, cssUrl, context) {
-  const withUrls = await rewriteCssUrlFunctions(cssText, cssUrl, context);
-  return rewriteCssImports(withUrls, cssUrl, context);
-}
-
-function absolutizeCssAssetUrls(cssText, cssUrl) {
-  const withUrls = cssText.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, (match, _quote, rawUrl) => {
-    const absoluteUrl = resolveNestedAssetUrl(rawUrl, cssUrl);
-    return absoluteUrl ? `url("${escapeCssString(absoluteUrl)}")` : match;
-  });
-
-  return withUrls.replace(/@import\s+(['"])([^'"]+)\1/g, (match, _quote, rawUrl) => {
-    const absoluteUrl = resolveNestedAssetUrl(rawUrl, cssUrl);
-    return absoluteUrl ? `@import "${escapeCssString(absoluteUrl)}"` : match;
-  });
-}
-
-async function rewriteCssUrlFunctions(cssText, cssUrl, context) {
-  const urlRegex = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
-  let result = "";
-  let lastIndex = 0;
-  let match = urlRegex.exec(cssText);
-
-  while (match) {
-    throwIfExportStopped();
-    const rawUrl = match[2].trim();
-    const replacement = await makeCssLocalUrl(match[0], rawUrl, cssUrl, "asset", context);
-    result += cssText.slice(lastIndex, match.index);
-    result += replacement;
-    lastIndex = match.index + match[0].length;
-    match = urlRegex.exec(cssText);
-  }
-
-  return result + cssText.slice(lastIndex);
-}
-
-async function rewriteCssImports(cssText, cssUrl, context) {
-  const importRegex = /@import\s+(['"])([^'"]+)\1/g;
-  let result = "";
-  let lastIndex = 0;
-  let match = importRegex.exec(cssText);
-
-  while (match) {
-    throwIfExportStopped();
-    const rawUrl = match[2].trim();
-    const replacement = await makeCssImportLocalUrl(match[0], rawUrl, cssUrl, context);
-    result += cssText.slice(lastIndex, match.index);
-    result += replacement;
-    lastIndex = match.index + match[0].length;
-    match = importRegex.exec(cssText);
-  }
-
-  return result + cssText.slice(lastIndex);
-}
-
-async function makeCssLocalUrl(originalText, rawUrl, cssUrl, kind, context) {
-  throwIfExportStopped();
-  const absoluteUrl = resolveNestedAssetUrl(rawUrl, cssUrl);
-  if (!absoluteUrl) {
-    return originalText;
-  }
-
-  const localFileName = await ensureAsset(absoluteUrl, null, kind, context);
-  return localFileName ? `url("${escapeCssString(localFileName)}")` : originalText;
-}
-
-async function makeCssImportLocalUrl(originalText, rawUrl, cssUrl, context) {
-  throwIfExportStopped();
-  const absoluteUrl = resolveNestedAssetUrl(rawUrl, cssUrl);
-  if (!absoluteUrl) {
-    return originalText;
-  }
-
-  const localFileName = await ensureAsset(absoluteUrl, null, "style", context);
-  return localFileName ? `@import "${escapeCssString(localFileName)}"` : originalText;
-}
-
-function resolveNestedAssetUrl(rawUrl, baseUrl) {
-  if (!rawUrl) {
-    return null;
-  }
-
-  const trimmed = rawUrl.trim();
-  const lower = trimmed.toLowerCase();
-
-  if (!trimmed ||
-    trimmed.startsWith("#") ||
-    lower.startsWith("data:") ||
-    lower.startsWith("blob:") ||
-    lower.startsWith("javascript:") ||
-    lower.startsWith("about:")) {
-    return null;
-  }
-
-  try {
-    const absoluteUrl = new URL(trimmed, baseUrl);
-    if (absoluteUrl.protocol !== "http:" && absoluteUrl.protocol !== "https:") {
-      return null;
-    }
-
-    return absoluteUrl.href;
-  } catch (_error) {
-    return null;
-  }
-}
-
-function escapeCssString(value) {
-  return String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
-}
-
-function addExportMetadataComment(html, group, file, assetFailureCount, mode) {
-  const metadata = [
-    `TabPack ${getHtmlModeLogLabel(mode)} export`,
-    `Original title: ${file.title}`,
-    `Original URL: ${file.url}`,
-    `Tab group: ${group.originalTitle}`,
-    `Order: ${file.order}`,
-    `Exported: ${new Date().toISOString()}`,
-    `Asset failures: ${assetFailureCount}`
-  ].map((line) => line.replace(/--/g, "- -")).join("\n");
-
-  return html.replace(/(<html\b[^>]*>)/i, `$1\n<!--\n${metadata}\n-->`);
-}
-
-function logAssetWarnings(fetchFailures, writeFailures, assetFolderLabel) {
-  const allFailures = [
-    ...fetchFailures.map((failure) => ({
-      ...failure,
-      stage: "fetch"
-    })),
-    ...writeFailures.map((failure) => ({
-      ...failure,
-      stage: "write"
-    }))
-  ];
-
-  if (!allFailures.length) {
-    return;
-  }
-
-  logMessage(`${assetFolderLabel}: ${allFailures.length} asset(s) could not be saved. The HTML was still written, but some local references may be missing.`, "warning");
-
-  for (const failure of allFailures.slice(0, 5)) {
-    logMessage(`Asset ${failure.stage} warning for ${failure.fileName}: ${failure.error}`, "warning");
-  }
-
-  if (allFailures.length > 5) {
-    logMessage(`${assetFolderLabel}: ${allFailures.length - 5} additional asset warning(s) hidden from the log.`, "warning");
-  }
-}
-
-function saveTabAsMhtml(tabId) {
-  return saveAsMHTML({ tabId }).then((blob) => {
-    if (!(blob instanceof Blob)) {
-      throw new Error("MHTML capture did not return a Blob.");
-    }
-
-    return blob;
-  });
-}
-
-function refreshPlanDisplay() {
-  if (!state.exportPlan) {
-    updateExportAvailability();
-    return;
-  }
-
-  applyModeAndPaths(state.exportPlan);
-  renderPreview();
-  updateExportAvailability();
-}
-
-function applyModeAndPaths(plan) {
-  ExportHelpers.applyModeAndPaths(plan, getPathOptions());
-  updateScanCounters(plan);
-}
-
-function getPathOptions() {
-  return {
-    mode: getSelectedMode(),
-    filenameMode: elements.filenameMode.value,
-    rootFolderName: ROOT_FOLDER_NAME,
-    createRootFolder: elements.createRootFolder.checked,
-    downloadsFallback: isDownloadsFallbackSelected(),
-    noGroupId: NO_GROUP_ID
-  };
-}
-
-function buildPlannedRelativePath(groupFolderName, fileName) {
-  return ExportHelpers.buildPlannedRelativePath(groupFolderName, fileName, getPathOptions());
-}
-
-function getSelectedMode() {
-  const selectedInput = elements.modeInputs.find((input) => input.checked);
-  return selectedInput ? selectedInput.value : HTML_RELEVANT_ASSETS_MODE;
-}
-
-function isHtmlSnapshotMode(mode) {
-  return mode === HTML_PAGE_MODE ||
-    mode === HTML_LOCAL_ASSET_PATHS_MODE ||
-    mode === HTML_RELEVANT_ASSETS_MODE ||
-    mode === HTML_ALL_ASSETS_MODE;
-}
-
-function isHtmlLocalReferenceMode(mode) {
-  return mode === HTML_LOCAL_ASSET_PATHS_MODE;
-}
-
-function isHtmlAssetMode(mode) {
-  return mode === HTML_RELEVANT_ASSETS_MODE || mode === HTML_ALL_ASSETS_MODE;
-}
-
-function getHtmlSerializerAssetMode(mode) {
-  if (mode === HTML_PAGE_MODE) {
-    return HTML_ASSET_NONE;
-  }
-
-  if (mode === HTML_LOCAL_ASSET_PATHS_MODE ||
-    mode === HTML_RELEVANT_ASSETS_MODE ||
-    mode === HTML_ALL_ASSETS_MODE) {
-    return HTML_ASSET_RELEVANT;
-  }
-
-  return HTML_ASSET_NONE;
-}
-
-function getHtmlFetchAssetMode(mode) {
-  if (mode === HTML_ALL_ASSETS_MODE) {
-    return HTML_ASSET_ALL;
-  }
-
-  if (mode === HTML_RELEVANT_ASSETS_MODE) {
-    return HTML_ASSET_RELEVANT;
-  }
-
-  return HTML_ASSET_NONE;
-}
-
-function shouldDownloadHtmlAssets(mode) {
-  return isHtmlAssetMode(mode);
-}
-
-function getHtmlModeLogLabel(mode) {
-  if (mode === HTML_PAGE_MODE) {
-    return "HTML page with online assets";
-  }
-
-  if (mode === HTML_LOCAL_ASSET_PATHS_MODE) {
-    return "HTML page with local asset paths";
-  }
-
-  if (mode === HTML_RELEVANT_ASSETS_MODE) {
-    return "HTML page with relevant assets";
-  }
-
-  return "HTML page with all assets";
-}
-
-function isDownloadsFallbackSelected() {
-  return !elements.fallbackPanel.classList.contains("hidden") && elements.useDownloadsFallback.checked;
-}
-
-function renderPreview() {
-  elements.preview.textContent = "";
-
-  if (!state.exportPlan || state.exportPlan.totalEligibleTabs === 0) {
-    clearPreview("No eligible grouped HTTP/HTTPS tabs to export.");
-    return;
-  }
-
-  const fragment = document.createDocumentFragment();
-  const destination = document.createElement("p");
-  destination.className = "muted";
-  destination.textContent = isDownloadsFallbackSelected()
-    ? `Base destination: Downloads/${ROOT_FOLDER_NAME}/ fallback`
-    : elements.createRootFolder.checked
-      ? `Base destination: selected folder/${ROOT_FOLDER_NAME}/`
-      : "Base destination: selected folder/";
-  fragment.append(destination);
-
-  const reportBlock = document.createElement("div");
-  reportBlock.className = "group-preview";
-
-  const reportHeading = document.createElement("h3");
-  reportHeading.textContent = "Report CSV";
-  reportBlock.append(reportHeading);
-
-  const reportFields = document.createElement("div");
-  reportFields.className = "preview-fields";
-  if (shouldExportCsvReport()) {
-    appendPreviewField(reportFields, "CSV file", state.exportPlan.csvRelativePath, {
-      path: true
-    });
-    appendPreviewField(reportFields, "CSV rows", `${getCsvSelectedRowCount(state.exportPlan)} selected page row(s)`);
-  } else {
-    appendPreviewField(reportFields, "Status", "Not exported", {
-      note: true
-    });
-    if (state.exportPlan.mode === CSV_MODE) {
-      appendPreviewField(reportFields, "CSV mode", "Enable Export report CSV before exporting", {
-        note: true
-      });
-    }
-  }
-  reportBlock.append(reportFields);
-  fragment.append(reportBlock);
-
-  for (const group of state.exportPlan.groups) {
-    const groupBlock = document.createElement("div");
-    groupBlock.className = "group-preview";
-
-    const groupSelection = getGroupSelectionState(group);
-    const groupLabel = document.createElement("label");
-    groupLabel.className = "group-select";
-
-    const groupCheckbox = document.createElement("input");
-    groupCheckbox.type = "checkbox";
-    groupCheckbox.checked = groupSelection.checked;
-    groupCheckbox.indeterminate = groupSelection.indeterminate;
-    groupCheckbox.dataset.groupId = String(group.groupId);
-    groupCheckbox.addEventListener("change", () => {
-      setGroupSelection(group.groupId, groupCheckbox.checked);
-    });
-
-    const groupTitle = document.createElement("span");
-    groupTitle.className = "group-title";
-
-    const heading = document.createElement("h3");
-    heading.textContent = group.originalTitle;
-    groupTitle.append(heading);
-
-    const selectionSummary = document.createElement("span");
-    selectionSummary.className = "selection-summary";
-    selectionSummary.textContent = `${group.selectedCount} of ${group.files.length} selected`;
-    groupTitle.append(selectionSummary);
-
-    if (group.originalTitle !== group.sanitizedFolderName) {
-      const outputFolder = document.createElement("span");
-      outputFolder.className = "selection-summary";
-      outputFolder.textContent = `Output folder: ${group.sanitizedFolderName}`;
-      groupTitle.append(outputFolder);
-    }
-
-    groupLabel.append(groupCheckbox, groupTitle);
-    groupBlock.append(groupLabel);
-
-    const list = document.createElement("ul");
-    for (const file of group.files) {
-      const item = document.createElement("li");
-      if (!file.selected) {
-        item.className = "deselected";
-      }
-
-      const tabLabel = document.createElement("label");
-      tabLabel.className = "tab-select";
-
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.checked = file.selected;
-      checkbox.dataset.selectionKey = file.selectionKey;
-      checkbox.addEventListener("change", () => {
-        setFileSelection(file.selectionKey, checkbox.checked);
-      });
-
-      const body = document.createElement("span");
-      body.className = "tab-preview-body";
-
-      const fields = document.createElement("span");
-      fields.className = "preview-fields";
-      appendPreviewField(fields, "Title", file.title);
-
-      if (state.exportPlan.mode === CSV_MODE) {
-        if (file.selected) {
-          appendPreviewField(fields, "CSV row", shouldExportCsvReport() ? "Included" : "Not exported");
-          appendPreviewField(fields, "Selected order", String(file.selectedOrderInGroup));
-        } else {
-          appendPreviewField(fields, "Status", "Not selected", {
-            note: true
-          });
-        }
-      } else {
-        if (file.selected) {
-          appendPreviewField(fields, "File", file.plannedRelativePath, {
-            path: true
-          });
-        } else {
-          appendPreviewField(fields, "Status", "Not selected", {
-            note: true
-          });
-        }
-
-        if (file.plannedAssetFolderPath) {
-          appendPreviewField(fields, "Assets", `${file.plannedAssetFolderPath} (${getAssetFolderPreviewLabel(state.exportPlan.mode)})`, {
-            path: true
-          });
-        }
-
-        if (file.plannedReferenceAssetFolderPath) {
-          appendPreviewField(fields, "Assets", file.plannedReferenceAssetFolderPath, {
-            path: true
-          });
-          appendPreviewField(fields, "Note", "Folder is referenced only; assets are not downloaded", {
-            note: true
-          });
-        }
-      }
-
-      body.append(fields);
-      tabLabel.append(checkbox, body);
-      item.append(tabLabel);
-
-      list.append(item);
-    }
-
-    groupBlock.append(list);
-    fragment.append(groupBlock);
-  }
-
-  elements.preview.append(fragment);
-}
-
-function appendPreviewField(container, label, value, options = {}) {
-  const field = document.createElement("span");
-  field.className = "preview-field";
-
-  const labelElement = document.createElement("span");
-  labelElement.className = "preview-label";
-  labelElement.textContent = `${label}:`;
-
-  const valueElement = document.createElement("span");
-  valueElement.className = options.note ? "preview-value preview-note" : "preview-value";
-  if (options.path) {
-    valueElement.classList.add("path");
-  }
-  valueElement.textContent = value;
-
-  field.append(labelElement, valueElement);
-  container.append(field);
-}
-
-function getGroupSelectionState(group) {
-  const selectedCount = group.files.filter((file) => file.selected).length;
-  return {
-    checked: selectedCount > 0 && selectedCount === group.files.length,
-    indeterminate: selectedCount > 0 && selectedCount < group.files.length
-  };
-}
-
-function setGroupSelection(groupId, selected) {
-  if (!state.exportPlan) {
-    return;
-  }
-
-  for (const group of state.exportPlan.groups) {
-    if (group.groupId !== groupId) {
-      continue;
-    }
-
-    for (const file of group.files) {
-      file.selected = selected;
-    }
-    break;
-  }
-
-  refreshPlanDisplay();
-}
-
-function setFileSelection(selectionKey, selected) {
-  if (!state.exportPlan) {
-    return;
-  }
-
-  for (const group of state.exportPlan.groups) {
-    const file = group.files.find((candidate) => candidate.selectionKey === selectionKey);
-    if (file) {
-      file.selected = selected;
-      break;
-    }
-  }
-
-  refreshPlanDisplay();
-}
-
-function getAssetFolderPreviewLabel(mode) {
-  if (mode === HTML_RELEVANT_ASSETS_MODE) {
-    return "relevant assets folder";
-  }
-
-  if (mode === HTML_ALL_ASSETS_MODE) {
-    return "all assets folder";
-  }
-
-  return "assets folder";
-}
-
-function renderSkippedTabs() {
-  elements.skippedTabs.textContent = "";
-  elements.skippedSummaryText.textContent = `(${state.skippedTabs.length})`;
-
-  if (!state.skippedTabs.length) {
-    const empty = document.createElement("p");
-    empty.className = "muted";
-    empty.textContent = "No skipped tabs.";
-    elements.skippedTabs.append(empty);
-    return;
-  }
-
-  const groups = groupSkippedTabsByReason(state.skippedTabs);
-  const container = document.createElement("div");
-  container.className = "skipped-groups";
-
-  for (const group of groups) {
-    const section = document.createElement("section");
-    section.className = "skipped-reason-group";
-
-    const heading = document.createElement("h3");
-    heading.className = "skipped-reason-heading";
-
-    const reason = document.createElement("span");
-    reason.className = "skipped-reason";
-    reason.textContent = formatSkippedReason(group.reason);
-
-    const count = document.createElement("span");
-    count.className = "skipped-reason-count";
-    count.textContent = String(group.tabs.length);
-
-    heading.append(reason, count);
-    section.append(heading);
-
-    const list = document.createElement("ul");
-    list.className = "skipped-list";
-
-    for (const skippedTab of group.tabs) {
-      const item = document.createElement("li");
-      item.className = "skipped-item";
-
-      const title = document.createElement("span");
-      title.className = "skipped-title";
-      title.textContent = skippedTab.title || "(untitled)";
-
-      const url = document.createElement("span");
-      url.className = "skipped-url";
-      url.textContent = skippedTab.url || "(no URL)";
-
-      item.append(title, " ", url);
-      list.append(item);
-    }
-
-    section.append(list);
-    container.append(section);
-  }
-
-  elements.skippedTabs.append(container);
-}
-
-function groupSkippedTabsByReason(skippedTabs) {
-  const groupsByReason = new Map();
-
-  for (const skippedTab of skippedTabs) {
-    const reason = skippedTab.reason || "skipped";
-    if (!groupsByReason.has(reason)) {
-      groupsByReason.set(reason, []);
-    }
-    groupsByReason.get(reason).push(skippedTab);
-  }
-
-  return Array.from(groupsByReason, ([reason, tabs]) => ({ reason, tabs }));
-}
-
-function formatSkippedReason(reason) {
-  if (!reason) {
-    return "Skipped";
-  }
-
-  return reason
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
-    .join(" ");
-}
-
-function clearPreview(message) {
-  elements.preview.textContent = "";
-  const paragraph = document.createElement("p");
-  paragraph.className = "muted";
-  paragraph.textContent = message;
-  elements.preview.append(paragraph);
-}
-
-function clearSkippedTabs() {
-  elements.skippedTabs.textContent = "";
-  elements.skippedSummaryText.textContent = "(0)";
-  const paragraph = document.createElement("p");
-  paragraph.className = "muted";
-  paragraph.textContent = "No skipped tabs yet.";
-  elements.skippedTabs.append(paragraph);
-}
-
-function updateExportAvailability() {
-  const hasPlan = Boolean(state.exportPlan && state.exportPlan.totalEligibleTabs > 0);
-  const hasSelection = Boolean(state.exportPlan && state.exportPlan.totalSelectedTabs > 0);
-  const hasModeOutput = Boolean(state.exportPlan && (
-    state.exportPlan.mode !== CSV_MODE || shouldExportCsvReport()
-  ));
-  const hasSelectedFolder = Boolean(state.selectedDirectoryHandle && state.selectedDirectoryWritable);
-  const hasDestination = hasSelectedFolder || isDownloadsFallbackSelected();
-  elements.exportButton.disabled = state.isExporting || !hasPlan || !hasSelection || !hasModeOutput || !hasDestination;
-  elements.stopExportButton.disabled = !state.isExporting || state.stopRequested;
-}
-
-function updateScanCounters(plan) {
-  setCounter(elements.eligibleCount, plan.totalEligibleTabs);
-  setCounter(elements.selectedCount, plan.totalSelectedTabs || 0);
-  setCounter(elements.skippedCount, plan.skippedTabs.length);
-  elements.skippedSummaryText.textContent = `(${plan.skippedTabs.length})`;
-}
-
-function resetCounters() {
-  setCounter(elements.eligibleCount, 0);
-  setCounter(elements.selectedCount, 0);
-  setCounter(elements.skippedCount, 0);
-  setCounter(elements.successCount, 0);
-  setCounter(elements.failureCount, 0);
-  elements.skippedSummaryText.textContent = "(0)";
-}
-
-function setCounter(element, value) {
-  element.textContent = String(value);
-}
-
-function setExportProgressIdle(message) {
-  if (!elements.exportProgressPanel) {
-    return;
-  }
-
-  elements.exportProgressPanel.className = "export-progress";
-  elements.exportProgressPercent.textContent = "0%";
-  elements.exportProgressBar.style.inlineSize = "0%";
-  if (elements.exportProgressTrack) {
-    elements.exportProgressTrack.setAttribute("aria-valuenow", "0");
-  }
-  elements.exportProgressDetail.textContent = message;
-}
-
-function resetExportProgress(totalItems, unit) {
-  if (!elements.exportProgressPanel) {
-    return;
-  }
-
-  const result = {
-    success: 0,
-    failure: 0,
-    completedItems: 0,
-    totalItems,
-    progressUnit: unit
-  };
-  elements.exportProgressPanel.className = "export-progress";
-  updateExportProgress(result, "Export is starting.");
-}
-
-function markExportItemsComplete(result, count = 1) {
-  if (!result || !Number.isFinite(result.totalItems)) {
-    return;
-  }
-
-  result.completedItems = Math.min(result.totalItems, result.completedItems + count);
-  updateExportProgress(result, "Export is running.");
-}
-
-function finishExportProgress(result, state) {
-  if (!result || !elements.exportProgressPanel) {
-    return;
-  }
-
-  const statusText = state === "done"
-    ? "Export finished."
-    : state === "warning"
-      ? "Export finished with failures or warnings."
-      : state === "stopped"
-        ? "Export stopped by user."
-        : "Export stopped before all items were concluded.";
-  updateExportProgress(result, statusText);
-  elements.exportProgressPanel.classList.toggle("done", state === "done");
-  elements.exportProgressPanel.classList.toggle("warning", state === "warning");
-  elements.exportProgressPanel.classList.toggle("error", state === "error");
-  elements.exportProgressPanel.classList.toggle("stopped", state === "stopped");
-}
-
-function updateExportProgress(result, statusText) {
-  if (!elements.exportProgressPanel) {
-    return;
-  }
-
-  const total = Math.max(0, result.totalItems || 0);
-  const completed = Math.min(total, Math.max(0, result.completedItems || 0));
-  const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
-  const unitLabel = total === 1 ? result.progressUnit : `${result.progressUnit}s`;
-  const success = result.success || 0;
-  const failure = result.failure || 0;
-
-  elements.exportProgressPercent.textContent = `${percent}%`;
-  elements.exportProgressBar.style.inlineSize = `${percent}%`;
-  if (elements.exportProgressTrack) {
-    elements.exportProgressTrack.setAttribute("aria-valuenow", String(percent));
-  }
-  elements.exportProgressDetail.textContent =
-    `${completed} of ${total} ${unitLabel} concluded (${success} succeeded, ${failure} failed). ${statusText}`;
-}
-
-function logMessage(message, level = "info") {
-  const item = document.createElement("div");
-  item.className = `log-entry ${level}`;
-
-  const time = document.createElement("span");
-  time.className = "log-time";
-  time.textContent = new Date().toLocaleTimeString();
-
-  const badge = document.createElement("span");
-  badge.className = "log-badge";
-  badge.textContent = getLogLevelLabel(level);
-
-  const text = document.createElement("span");
-  text.className = "log-message";
-  text.textContent = message;
-
-  item.append(time, badge, text);
-  elements.progressLog.append(item);
-  elements.progressLog.parentElement.scrollTop = elements.progressLog.parentElement.scrollHeight;
-}
-
-function getLogLevelLabel(level) {
-  if (level === "start") {
-    return "START";
-  }
-
-  if (level === "progress") {
-    return "WORKING";
-  }
-
-  if (level === "success") {
-    return "DONE";
-  }
-
-  if (level === "warning") {
-    return "WARNING";
-  }
-
-  if (level === "error") {
-    return "ERROR";
-  }
-
-  return "INFO";
-}
-
-function getErrorMessage(error) {
-  if (!error) {
-    return "Unknown error";
-  }
-
-  return error.message || String(error);
-}
-
-function isUserCancellation(error) {
-  return error && (error.name === "AbortError" || /aborted|cancel/i.test(getErrorMessage(error)));
-}
+})(globalThis);

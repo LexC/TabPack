@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 
 const { EXPORT_PAGE_PATH } = globalThis.TabPackConstants;

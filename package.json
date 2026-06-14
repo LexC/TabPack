@@ -5,7 +5,8 @@
   "description": "Store packaging and validation scripts for the TabPack browser extension.",
   "type": "module",
   "scripts": {
-    "check": "npm test && npm run validate && npm run build",
+    "check": "npm run typecheck && npm test && npm run validate && npm run build",
+    "typecheck": "tsc --noEmit",
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "node --test tests/unit/*.test.js",
     "test:e2e": "playwright test tests/e2e",
@@ -15,6 +16,9 @@
     "build": "node scripts/build-zip.mjs all"
   },
   "devDependencies": {
-    "@playwright/test": "^1.54.0"
+    "@playwright/test": "^1.54.0",
+    "@types/chrome": "^0.1.43",
+    "@types/node": "^25.9.3",
+    "typescript": "^6.0.3"
   }
 }

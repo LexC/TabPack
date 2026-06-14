@@ -1,3 +1,4 @@
+// @ts-check
 import { test, expect, chromium } from "@playwright/test";
 import http from "node:http";
 import os from "node:os";
@@ -24,6 +25,9 @@ test.beforeAll(async () => {
     server.listen(0, "127.0.0.1", resolve);
   });
   const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("The local e2e server did not return a TCP address.");
+  }
   baseUrl = `http://127.0.0.1:${address.port}`;
 });
 
@@ -59,12 +63,13 @@ test("loads extension, summarizes popup, scans, selects, and previews CSV rows",
     await exportPage.goto(`chrome-extension://${extensionId}/export/export.html`);
 
     await exportPage.evaluate(async (base) => {
-      const tabs = await chrome.tabs.query({ currentWindow: true });
+      const extensionChrome = /** @type {any} */ (chrome);
+      const tabs = await extensionChrome.tabs.query({ currentWindow: true });
       const tabIds = tabs
         .filter((tab) => tab.url && tab.url.startsWith(base))
         .map((tab) => tab.id);
-      const groupId = await chrome.tabs.group({ tabIds });
-      await chrome.tabGroups.update(groupId, { title: "E2E Group" });
+      const groupId = await extensionChrome.tabs.group({ tabIds });
+      await extensionChrome.tabGroups.update(groupId, { title: "E2E Group" });
     }, baseUrl);
 
     const popupPage = await context.newPage();

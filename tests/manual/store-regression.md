@@ -10,6 +10,7 @@
 ## Packaging
 
 - [ ] Confirm `extension/manifest.json` has `optional_host_permissions`, not broad HTTP/HTTPS `host_permissions`.
+- [ ] Confirm `pageCapture` and `downloads` are optional permissions, while `scripting` remains required.
 - [ ] Confirm `storage` is included in permissions.
 - [ ] Confirm no remote scripts, inline scripts, or inline styles were added.
 - [ ] Confirm icons are present and PNG signatures validate.

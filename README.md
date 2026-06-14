@@ -172,13 +172,13 @@ TabPack requests only the permissions needed to inspect grouped tabs and save ex
 | --- | --- |
 | `tabs` | Read tab titles, URLs, indexes, and window membership for export planning. |
 | `tabGroups` | Read browser tab group names, IDs, and ordering. |
-| `pageCapture` | Save tabs as MHTML archives. |
-| `downloads` | Provide the explicit `Downloads/TabPack/` fallback. |
 | `scripting` | Run the HTML serializer inside exported HTTP/HTTPS tabs. |
 | `storage` | Remember export settings. |
+| Optional `pageCapture` | Requested at runtime only when exporting MHTML archives. |
+| Optional `downloads` | Requested at runtime only when using the explicit `Downloads/TabPack/` fallback. |
 | Optional `http://*/*`, `https://*/*` | Requested at runtime for HTML export modes so TabPack can serialize selected web pages and fetch referenced assets. |
 
-HTML export uses the standard `scripting` API when the browser exposes it to the export page. If that API is unavailable there, TabPack asks its background service worker to run the same serializer in each exported HTTP/HTTPS tab. CSV and MHTML modes do not request optional HTTP/HTTPS host access.
+HTML export uses the standard `scripting` API when the browser exposes it to the export page. If that API is unavailable there, TabPack asks its background service worker to run the same serializer in each exported HTTP/HTTPS tab. CSV and MHTML modes do not request optional HTTP/HTTPS host access. Selected-folder exports do not request the optional `downloads` permission.
 
 ## Known Limitations
 
@@ -250,6 +250,8 @@ npm run check
 `npm run build:edge` writes `dist/tabpack-edge-<version>.zip`. `npm run build:chrome` writes `dist/tabpack-chrome-<version>.zip`. Generated ZIP files are ignored by git.
 
 Store ZIPs contain the contents of `extension/` at the ZIP root, with `manifest.json` directly inside the archive. The release gate checks version alignment, required scripts, CI wiring, ignored generated artifacts, removed report artifacts, and package entries before writing ZIPs.
+
+See [docs/dev/](docs/dev/) for the runtime architecture, documentation guide, coding conventions, and WSL test notes.
 
 ## Contributing
 

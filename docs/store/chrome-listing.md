@@ -22,6 +22,6 @@ Productivity, Developer Tools, Workflow and Planning
 
 ## Privacy Notes
 
-TabPack needs tab, tab group, scripting, page capture, downloads, and storage permissions to inspect grouped tabs, serialize open pages, capture MHTML, remember settings, and write export files. HTTP/HTTPS host access is requested at runtime for HTML export modes.
+TabPack needs tab, tab group, scripting, and storage permissions to inspect grouped tabs, serialize open pages, and remember settings. MHTML capture, Downloads fallback, and HTTP/HTTPS host access are requested at runtime only when the selected export mode needs them.
 
 Exports stay on the user's device.

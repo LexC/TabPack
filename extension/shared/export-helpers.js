@@ -1,7 +1,8 @@
+// @ts-check
 "use strict";
 
 (function exposeExportHelpers(root) {
-  const constants = root.TabPackConstants || {};
+  const constants = /** @type {Partial<TabPackConstantsApi>} */ (root.TabPackConstants || {});
   const ROOT_FOLDER_NAME = constants.ROOT_FOLDER_NAME || "TabPack";
   const MAX_FOLDER_NAME_LENGTH = constants.MAX_FOLDER_NAME_LENGTH || 80;
   const HTML_PAGE_MODE = constants.HTML_PAGE_MODE || "html";
@@ -16,6 +17,10 @@
   const FILENAME_MODE_TITLE = "title";
   const OPTIONAL_HOST_ORIGINS = ["http://*/*", "https://*/*"];
 
+  /**
+   * Return unique browser tab-group IDs from a tab list, excluding the browser's
+   * sentinel "not grouped" ID.
+   */
   function collectTabGroupIds(tabs, options = {}) {
     const noGroupId = typeof options.noGroupId === "number" ? options.noGroupId : -1;
     const groupIds = new Set();
@@ -29,6 +34,10 @@
     return Array.from(groupIds);
   }
 
+  /**
+   * Build the pure export plan used by popup summaries, preview rendering,
+   * file writers, and CSV generation.
+   */
   function buildExportPlanFromTabs(tabs, groupMetadata, options = {}) {
     const skippedTabs = [];
     const eligibleTabs = [];
@@ -165,6 +174,10 @@
     return `${groupId}:${tabId}`;
   }
 
+  /**
+   * Recompute selected file names and output paths after mode, destination, or
+   * selection changes. The plan object is mutated intentionally for UI reuse.
+   */
   function applyModeAndPaths(plan, options = {}) {
     const mode = options.mode || plan.mode || HTML_RELEVANT_ASSETS_MODE;
     const rootFolderName = options.rootFolderName || ROOT_FOLDER_NAME;
@@ -309,6 +322,10 @@
       .replace(/[.\s]+$/g, "");
   }
 
+  /**
+   * Generate the selected-page CSV index from the current plan and final writer
+   * results.
+   */
   function generateCsvIndex(plan, options = {}) {
     const exportedAt = options.exportedAt || new Date().toISOString();
     const pageResults = new Map((options.pageResults || []).map((result) => {
@@ -397,6 +414,10 @@
       .replace(/([(])\s+/g, "$1");
   }
 
+  /**
+   * Produce the popup's current-window summary without requiring tab-group
+   * metadata.
+   */
   function summarizeTabs(tabs, options = {}) {
     const noGroupId = typeof options.noGroupId === "number" ? options.noGroupId : -1;
     const groupIds = new Set();

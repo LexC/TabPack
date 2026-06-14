@@ -1,3 +1,4 @@
+// @ts-check
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -250,9 +251,19 @@ function validateManifest(manifest, errors) {
     validateManifestFile(relativePath, `action.default_icon.${size}`, errors);
   }
 
-  for (const permission of ["tabs", "tabGroups", "pageCapture", "downloads", "scripting", "storage"]) {
+  for (const permission of ["tabs", "tabGroups", "scripting", "storage"]) {
     if (!manifest.permissions?.includes(permission)) {
       errors.push(`manifest.json is missing required permission: ${permission}`);
+    }
+  }
+
+  for (const permission of ["pageCapture", "downloads"]) {
+    if (manifest.permissions?.includes(permission)) {
+      errors.push(`manifest.json should request ${permission} as an optional permission, not an install-time permission.`);
+    }
+
+    if (!manifest.optional_permissions?.includes(permission)) {
+      errors.push(`manifest.json is missing optional permission: ${permission}`);
     }
   }
 
