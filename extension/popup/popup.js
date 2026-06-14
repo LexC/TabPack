@@ -1,7 +1,7 @@
 "use strict";
 
-const { EXPORT_PAGE_PATH } = globalThis.TabGroupVaultConstants;
-const { createTab } = globalThis.TabGroupVaultBrowserApi;
+const { EXPORT_PAGE_PATH } = globalThis.TabPackConstants;
+const { createTab } = globalThis.TabPackBrowserApi;
 
 document.addEventListener("DOMContentLoaded", () => {
   const openButton = document.getElementById("openExport");
@@ -10,7 +10,7 @@ document.addEventListener("DOMContentLoaded", () => {
     createTab({
       url: chrome.runtime.getURL(EXPORT_PAGE_PATH)
     }).catch((error) => {
-      console.error("Failed to open TabGroupVault export page.", error);
+      console.error("Failed to open TabPack export page.", error);
     });
   });
 });

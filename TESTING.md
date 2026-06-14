@@ -1,4 +1,4 @@
-# TabGroupVault Manual Testing
+# TabPack Manual Testing
 
 Do not mark browser testing complete unless this unpacked extension has been loaded and tested in Microsoft Edge.
 
@@ -6,9 +6,9 @@ Do not mark browser testing complete unless this unpacked extension has been loa
 
 - [ ] Open `edge://extensions`.
 - [ ] Enable **Developer mode**.
-- [ ] Click **Load unpacked** and select the `TabGroupVault/extension` folder.
-- [ ] Pin or open the TabGroupVault extension action.
-- [ ] Click **Open TabGroupVault** to open `export/export.html`.
+- [ ] Click **Load unpacked** and select this project's `extension` folder.
+- [ ] Pin or open the TabPack extension action.
+- [ ] Click **Open TabPack** to open `export/export.html`.
 
 Notes:
 
@@ -20,8 +20,8 @@ Notes:
 
 - [ ] Run `npm run validate`.
 - [ ] Run `npm run build`.
-- [ ] Confirm `dist/tabgroupvault-edge-<version>.zip` exists.
-- [ ] Confirm `dist/tabgroupvault-chrome-<version>.zip` exists.
+- [ ] Confirm `dist/tabpack-edge-<version>.zip` exists.
+- [ ] Confirm `dist/tabpack-chrome-<version>.zip` exists.
 - [ ] Inspect each ZIP and confirm `manifest.json` is at the ZIP root, not under `extension/`.
 - [ ] Confirm generated ZIP files are not staged for commit.
 
@@ -54,7 +54,7 @@ Notes:
 - [ ] Confirm the preview shows one group folder, `1.html`, and `1_files/`.
 - [ ] Click **Export grouped tabs**.
 
-Expected result: `1.html` and `1_files/` are saved under the selected folder, inside `TabGroupVault/<group-name>/` when the root-folder checkbox is enabled.
+Expected result: `1.html` and `1_files/` are saved under the selected folder, inside `TabPack/<group-name>/` when the root-folder checkbox is enabled.
 
 Notes:
 
@@ -200,7 +200,7 @@ Notes:
 - [ ] Manually create `1.html` and `1_files/` in a planned group folder.
 - [ ] Export with uniquify mode.
 
-Expected result: TabGroupVault saves the next available pair, such as `1 (1).html` plus `1 (1)_files/`.
+Expected result: TabPack saves the next available pair, such as `1 (1).html` plus `1 (1)_files/`.
 
 Notes:
 
@@ -326,7 +326,7 @@ Notes:
 - [ ] Inspect that custom folder.
 - [ ] Inspect Downloads.
 
-Expected result: exported files appear under the selected custom folder, not only under `Downloads/TabGroupVault`.
+Expected result: exported files appear under the selected custom folder, not only under `Downloads/TabPack`.
 
 Notes:
 
@@ -336,10 +336,10 @@ Notes:
 
 ## 22. Root Folder Enabled
 
-- [ ] Keep **Create TabGroupVault root folder inside selected output folder** checked.
+- [ ] Keep **Create TabPack root folder inside selected output folder** checked.
 - [ ] Export.
 
-Expected result: files are under `Selected output folder/TabGroupVault/<group-folder>/`.
+Expected result: files are under `Selected output folder/TabPack/<group-folder>/`.
 
 Notes:
 
@@ -349,7 +349,7 @@ Notes:
 
 ## 23. Root Folder Disabled
 
-- [ ] Uncheck **Create TabGroupVault root folder inside selected output folder**.
+- [ ] Uncheck **Create TabPack root folder inside selected output folder**.
 - [ ] Export.
 
 Expected result: group folders are written directly inside the selected folder.
@@ -375,10 +375,10 @@ Notes:
 ## 25. Downloads Fallback
 
 - [ ] Trigger or simulate unavailable selected-folder export.
-- [ ] Check **Use fallback export to Downloads/TabGroupVault**.
+- [ ] Check **Use fallback export to Downloads/TabPack**.
 - [ ] Scan and export.
 
-Expected result: files are saved under `Downloads/TabGroupVault/`, and the UI clearly labels this as fallback behavior.
+Expected result: files are saved under `Downloads/TabPack/`, and the UI clearly labels this as fallback behavior.
 
 Notes:
 
@@ -471,7 +471,7 @@ Notes:
 
 ## 32. Export Mode List Order
 
-- [ ] Open TabGroupVault.
+- [ ] Open TabPack.
 - [ ] Inspect the export mode selector.
 
 Expected result: the visible order is **HTML page, online assets (.html)**, **HTML page, local asset paths (.html)**, **HTML page + relevant assets (.html + _files)**, **HTML page + all assets (.html + _files)**, **MHTML page archives (.mhtml)**, and **CSV page index (.csv)**.

@@ -1,16 +1,16 @@
-# TabGroupVault Privacy Policy
+# TabPack Privacy Policy
 
-TabGroupVault is designed as a local-only browser extension.
+TabPack is designed as a local-only browser extension.
 
 ## Data Collection
 
-TabGroupVault does not collect, transmit, sell, rent, or share personal data.
+TabPack does not collect, transmit, sell, rent, or share personal data.
 
 The extension does not use analytics, telemetry, tracking pixels, remote logging, advertising SDKs, or external application servers.
 
 ## Local Browser Access
 
-TabGroupVault reads tab metadata and page content only when you explicitly scan and export grouped tabs. This access is used to create files on your device.
+TabPack reads tab metadata and page content only when you explicitly scan and export grouped tabs. This access is used to create files on your device.
 
 The extension can read:
 
@@ -22,7 +22,7 @@ The extension can read:
 
 Exports are written to the folder you choose with the File System Access API, or to the clearly labeled Downloads fallback when selected-folder export is unavailable.
 
-TabGroupVault does not upload exported files anywhere.
+TabPack does not upload exported files anywhere.
 
 ## Network Requests
 

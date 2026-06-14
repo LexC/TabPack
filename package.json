@@ -1,8 +1,8 @@
 {
-  "name": "tabgroupvault",
+  "name": "tabpack",
   "version": "1.0.0",
   "private": true,
-  "description": "Store packaging and validation scripts for the TabGroupVault browser extension.",
+  "description": "Store packaging and validation scripts for the TabPack browser extension.",
   "type": "module",
   "scripts": {
     "validate": "node scripts/validate-extension.mjs",

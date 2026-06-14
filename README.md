@@ -1,12 +1,12 @@
-# TabGroupVault
+# TabPack
 
-TabGroupVault is a local Chromium browser extension that exports tabs from browser tab groups in the current window. Each tab group becomes a folder, and each grouped HTTP/HTTPS tab becomes a numbered file in the same left-to-right order shown in the tab strip.
+TabPack saves tabs in groups: it is a local Chromium browser extension that exports tabs from browser tab groups in the current window. Each tab group becomes a folder, and each grouped HTTP/HTTPS tab becomes a numbered file in the same left-to-right order shown in the tab strip.
 
-By default, exports are written under a `TabGroupVault` folder inside a folder you choose:
+By default, exports are written under a `TabPack` folder inside a folder you choose:
 
 ```text
 Selected output folder/
-  TabGroupVault/
+  TabPack/
     Group1/
       1.html
       1_files/
@@ -39,16 +39,16 @@ MHTML mode uses the same group folder structure with `.mhtml` files. CSV mode wr
 
 The primary export path uses the File System Access API. Click **Choose output folder** before exporting, then grant read/write access to the chosen folder. The browser exposes the selected folder name to the extension, but it does not expose the full absolute path.
 
-The checkbox **Create TabGroupVault root folder inside selected output folder** is enabled by default. When enabled, group folders are created inside `TabGroupVault/`. When disabled, group folders are written directly inside the selected folder.
+The checkbox **Create TabPack root folder inside selected output folder** is enabled by default. When enabled, group folders are created inside `TabPack/`. When disabled, group folders are written directly inside the selected folder.
 
-TabGroupVault is not limited to `Downloads/TabGroupVault`. The user-selected folder flow is the main workflow.
+TabPack is not limited to `Downloads/TabPack`. The user-selected folder flow is the main workflow.
 
 ## Downloads Fallback
 
 If `window.showDirectoryPicker()` is unavailable, blocked, or write permission is denied, the extension shows a clearly labeled fallback option. The fallback writes to:
 
 ```text
-Downloads/TabGroupVault/
+Downloads/TabPack/
 ```
 
 The fallback is not silent and does not use repeated save dialogs for every file. For HTML asset modes, selected-folder export keeps `N.html` and `N_files/` pairs together more reliably than the Downloads fallback.
@@ -88,13 +88,13 @@ npm run validate
 npm run build
 ```
 
-`npm run build:edge` writes `dist/tabgroupvault-edge-<version>.zip`. `npm run build:chrome` writes `dist/tabgroupvault-chrome-<version>.zip`. Generated ZIP files are ignored by git.
+`npm run build:edge` writes `dist/tabpack-edge-<version>.zip`. `npm run build:chrome` writes `dist/tabpack-chrome-<version>.zip`. Generated ZIP files are ignored by git.
 
 ## Use
 
 1. Open tabs in the browser and place the tabs you want to export into tab groups.
-2. Click the TabGroupVault extension button.
-3. Click **Open TabGroupVault**.
+2. Click the TabPack extension button.
+3. Click **Open TabPack**.
 4. Choose an export mode.
 5. Click **Choose output folder** and grant read/write access.
 6. Click **Scan grouped tabs**.
@@ -149,7 +149,7 @@ tab-groups.csv
 
 Page titles are not used in filenames.
 
-By default, existing files are not overwritten. In HTML asset modes, conflicts are handled as pairs: if `1.html` or `1_files/` already exists, TabGroupVault saves `1 (1).html` and `1 (1)_files/`. An overwrite mode is available but is not the default. In HTML page modes, only the `.html` filename is uniquified or overwritten.
+By default, existing files are not overwritten. In HTML asset modes, conflicts are handled as pairs: if `1.html` or `1_files/` already exists, TabPack saves `1 (1).html` and `1 (1)_files/`. An overwrite mode is available but is not the default. In HTML page modes, only the `.html` filename is uniquified or overwritten.
 
 ## Privacy and Security
 
@@ -164,9 +164,9 @@ By default, existing files are not overwritten. In HTML asset modes, conflicts a
 
 ## Permissions
 
-TabGroupVault requests `tabs`, `tabGroups`, `pageCapture`, `downloads`, and `scripting`. It also requests `http://*/*` and `https://*/*` host permissions so it can serialize open HTTP/HTTPS pages and fetch referenced assets for HTML asset modes.
+TabPack requests `tabs`, `tabGroups`, `pageCapture`, `downloads`, and `scripting`. It also requests `http://*/*` and `https://*/*` host permissions so it can serialize open HTTP/HTTPS pages and fetch referenced assets for HTML asset modes.
 
-HTML export uses the standard `scripting` API when the browser exposes it to the export page. If that API is unavailable there, TabGroupVault asks its background service worker to run the same serializer in each exported HTTP/HTTPS tab.
+HTML export uses the standard `scripting` API when the browser exposes it to the export page. If that API is unavailable there, TabPack asks its background service worker to run the same serializer in each exported HTTP/HTTPS tab.
 
 ## Known Limitations
 
@@ -177,7 +177,7 @@ HTML export uses the standard `scripting` API when the browser exposes it to the
 - MHTML capture depends on Chromium support and may fail for restricted, internal, or complex pages.
 - The browser shows only the chosen folder name to the extension, not its full path.
 - File System Access support depends on the Edge/Chromium extension page context.
-- The Downloads fallback always writes below `Downloads/TabGroupVault/`.
+- The Downloads fallback always writes below `Downloads/TabPack/`.
 
 ## Troubleshooting
 
@@ -186,6 +186,6 @@ HTML export uses the standard `scripting` API when the browser exposes it to the
 - If write permission is denied, choose the folder again or select another folder.
 - If selected-folder export is unavailable, use the clearly labeled Downloads fallback.
 - If an HTML asset mode reports asset warnings, inspect the exported `N_files/` folder and retry with MHTML mode for a single-file archive.
-- If HTML export says the background serializer is unavailable, reload the unpacked extension from the browser extensions page, approve any new permissions, and reopen TabGroupVault.
-- If HTML export says a script execution API is unavailable, reload the unpacked extension from the browser extensions page, approve any new permissions, and reopen TabGroupVault.
+- If HTML export says the background serializer is unavailable, reload the unpacked extension from the browser extensions page, approve any new permissions, and reopen TabPack.
+- If HTML export says a script execution API is unavailable, reload the unpacked extension from the browser extensions page, approve any new permissions, and reopen TabPack.
 - If MHTML capture fails for some pages, retry with an HTML mode or export a CSV index.

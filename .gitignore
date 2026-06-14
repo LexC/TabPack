@@ -1,5 +1,6 @@
 dist/*.zip
 dist/*.crx
 node_modules/
+.venv/
 .DS_Store
 Thumbs.db

@@ -6,8 +6,8 @@ importScripts(
   "../export/page-serializer.js"
 );
 
-const { RUN_SERIALIZER_IN_TAB_MESSAGE } = globalThis.TabGroupVaultConstants;
-const { executeScript } = globalThis.TabGroupVaultBrowserApi;
+const { RUN_SERIALIZER_IN_TAB_MESSAGE } = globalThis.TabPackConstants;
+const { executeScript } = globalThis.TabPackBrowserApi;
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || message.type !== RUN_SERIALIZER_IN_TAB_MESSAGE) {

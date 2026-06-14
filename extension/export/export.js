@@ -15,7 +15,7 @@ const {
   HTML_ASSET_ALL,
   CSV_FILE_NAME,
   RUN_SERIALIZER_IN_TAB_MESSAGE
-} = globalThis.TabGroupVaultConstants;
+} = globalThis.TabPackConstants;
 
 const {
   queryTabs,
@@ -25,7 +25,7 @@ const {
   executeLegacyTabScript,
   sendRuntimeMessage,
   saveAsMHTML
-} = globalThis.TabGroupVaultBrowserApi;
+} = globalThis.TabPackBrowserApi;
 
 const NO_GROUP_ID = chrome.tabGroups && typeof chrome.tabGroups.TAB_GROUP_ID_NONE === "number"
   ? chrome.tabGroups.TAB_GROUP_ID_NONE
@@ -112,7 +112,7 @@ function stopExport() {
     state.exportAbortController.abort();
   }
   updateExportAvailability();
-  logMessage("Stop requested. TabGroupVault will stop after the current in-flight browser operation ends.", "warning");
+  logMessage("Stop requested. TabPack will stop after the current in-flight browser operation ends.", "warning");
 }
 
 function throwIfExportStopped() {
@@ -1166,7 +1166,7 @@ function executeSerializerInTab(tabId, options) {
   }
 
   return Promise.reject(new Error(
-    "HTML export requires the scripting API or the background serializer. Reload TabGroupVault from your browser extensions page after updating the extension, then reopen TabGroupVault."
+    "HTML export requires the scripting API or the background serializer. Reload TabPack from your browser extensions page after updating the extension, then reopen TabPack."
   ));
 }
 
@@ -1245,7 +1245,7 @@ function executeSerializerWithBackground(tabId, options) {
 function formatBackgroundSerializerError(message) {
   const details = String(message || "").trim();
   if (/receiving end does not exist/i.test(details)) {
-    return "The background serializer is not available. Reload TabGroupVault from your browser extensions page, then reopen TabGroupVault.";
+    return "The background serializer is not available. Reload TabPack from your browser extensions page, then reopen TabPack.";
   }
 
   return details
@@ -1569,7 +1569,7 @@ function escapeCssString(value) {
 
 function addExportMetadataComment(html, group, file, assetFailureCount, mode) {
   const metadata = [
-    `TabGroupVault ${getHtmlModeLogLabel(mode)} export`,
+    `TabPack ${getHtmlModeLogLabel(mode)} export`,
     `Original title: ${file.title}`,
     `Original URL: ${file.url}`,
     `Tab group: ${group.originalTitle}`,

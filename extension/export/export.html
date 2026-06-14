@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>TabGroupVault Export</title>
+    <title>TabPack Export</title>
     <link rel="stylesheet" href="export.css">
   </head>
   <body>
     <main>
       <header>
         <div>
-          <h1>TabGroupVault</h1>
-          <p>Export grouped tabs from the current browser window.</p>
+          <h1>TabPack</h1>
+          <p>Save Tab Groups as Local Files</p>
         </div>
         <div class="row">
           <button id="scanButton" type="button">Scan grouped tabs</button>
@@ -61,13 +61,13 @@
               <p id="selectedFolderText" class="status">No output folder selected.</p>
               <label>
                 <input id="createRootFolder" type="checkbox" checked>
-                Create TabGroupVault root folder inside selected output folder
+                Create TabPack root folder inside selected output folder
               </label>
               <div id="fallbackPanel" class="status warning hidden">
                 <p id="fallbackMessage">Selected-folder export is unavailable.</p>
                 <label>
                   <input id="useDownloadsFallback" type="checkbox">
-                  Use fallback export to Downloads/TabGroupVault
+                  Use fallback export to Downloads/TabPack
                 </label>
               </div>
             </div>

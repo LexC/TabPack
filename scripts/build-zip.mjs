@@ -29,7 +29,7 @@ const manifest = JSON.parse(readFileSync(path.join(extensionDir, "manifest.json"
 const entries = collectFiles(extensionDir);
 
 for (const name of targets) {
-  const outputPath = path.join(distDir, `tabgroupvault-${name}-${manifest.version}.zip`);
+  const outputPath = path.join(distDir, `tabpack-${name}-${manifest.version}.zip`);
   rmSync(outputPath, { force: true });
   writeFileSync(outputPath, makeZip(entries));
   console.log(`Wrote ${path.relative(repoRoot, outputPath)}`);

@@ -120,7 +120,7 @@
     });
   }
 
-  root.TabGroupVaultBrowserApi = Object.freeze({
+  root.TabPackBrowserApi = Object.freeze({
     createTab,
     queryTabs,
     getTabGroup,

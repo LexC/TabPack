@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "TabGroupVault",
+  "name": "TabPack",
   "version": "1.0.0",
-  "description": "Export browser tab groups as HTML pages, HTML asset folders, MHTML archives, or a CSV index.",
+  "description": "Save Tab Groups as Local Files. Export browser tab groups as HTML, MHTML, or CSV files.",
   "permissions": [
     "tabs",
     "tabGroups",
@@ -24,7 +24,7 @@
     "128": "assets/icons/icon128.png"
   },
   "action": {
-    "default_title": "TabGroupVault",
+    "default_title": "TabPack",
     "default_popup": "popup/popup.html",
     "default_icon": {
       "16": "assets/icons/icon16.png",
