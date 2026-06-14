@@ -1,106 +1,78 @@
 # TabPack
 
-TabPack saves tabs in groups: it is a local Chromium browser extension that exports tabs from browser tab groups in the current window. Each tab group becomes a folder, and each grouped HTTP/HTTPS tab becomes a numbered file in the same left-to-right order shown in the tab strip.
+**Save browser tab groups as local files.**
 
-By default, exports are written under a `TabPack` folder inside a folder you choose:
+TabPack is a free and open-source Chromium browser extension for exporting the tab groups in your current window. It turns each browser tab group into a folder, then saves grouped HTTP/HTTPS tabs as HTML snapshots, HTML asset folders, MHTML archives, or a CSV index.
+
+It is built for people who use tab groups as working sets: research sessions, project references, reading queues, investigations, documentation trails, and anything else worth keeping outside the browser.
+
+## Highlights
+
+- Free and open-source under the MIT License.
+- Local-first: no login, no analytics, no telemetry, and no uploads.
+- Exports only tabs in browser tab groups, so ungrouped browsing stays out of the archive.
+- Preserves browser tab-group order and tab order in deterministic numbered files.
+- Supports HTML, HTML + `_files` folders, MHTML, and CSV exports.
+- Writes to a folder you choose with the File System Access API when available.
+- Provides an explicit `Downloads/TabPack/` fallback when selected-folder export is unavailable.
+- Shows a preview, skipped tabs, progress counters, and export log before and during export.
+
+## Example Output
+
+By default, TabPack creates a `TabPack` folder inside the output folder you choose:
 
 ```text
 Selected output folder/
   TabPack/
-    Group1/
-      1.html
-      1_files/
-    Group2/
+    Research/
       1.html
       1_files/
       2.html
       2_files/
-      3.html
-      3_files/
+    Reading Queue/
+      1.html
+      1_files/
 ```
 
-MHTML mode uses the same group folder structure with `.mhtml` files. CSV mode writes a single index at the export root.
+MHTML mode uses the same group folders with `.mhtml` files. CSV mode writes one `tab-groups.csv` file at the export root.
 
-## Export Modes
+## Install
 
-**HTML page, online assets (`.html`)** injects a serializer into each grouped page, clones the current document, and saves a numbered HTML snapshot such as `1.html`. It does not write a matching `_files/` folder. Resource URLs are kept as absolute web URLs where practical, so the file may still load live web assets when opened online.
+TabPack is a Manifest V3 extension for Chromium-based browsers such as Microsoft Edge and Google Chrome.
 
-**HTML page, local asset paths (`.html`)** saves only `1.html`, but rewrites direct page resource references to local paths such as `./1_files/example`. It does not create or download the matching `_files/` folder. This mode is useful for comparing the root HTML against the asset-folder modes.
+1. Clone or download this repository.
+2. Open `edge://extensions` in Edge or `chrome://extensions` in Chrome.
+3. Enable **Developer mode**.
+4. Click **Load unpacked**.
+5. Select the `extension/` folder inside this project.
 
-**HTML page + relevant assets (`.html + _files`)** is the default mode. It saves `1.html` plus `1_files/` using a conservative asset set: direct page resources such as scripts, stylesheets, images, icons, media, frames, and `srcset` entries are saved locally. Stylesheet-internal `url(...)` and `@import` references are rewritten to absolute web URLs instead of recursively downloading every referenced asset. This is intended to be closer to Chromium's native "Save Page Complete" folder shape, but Chromium does not expose that exact internal pipeline to extensions.
+## Quick Start
 
-**HTML page + all assets (`.html + _files`)** uses the same root HTML local-path references as relevant-assets mode, then follows stylesheet `url(...)` and `@import` references recursively while writing asset files. This may save many more files than the browser's native save for large sites.
-
-**MHTML page archive (`.mhtml`)** uses Chromium's `chrome.pageCapture.saveAsMHTML` API. It is the most official extension API for offline page capture, but output is a single `.mhtml` file rather than `1.html` plus `1_files/`. Some pages may still fail or archive imperfectly.
-
-**CSV page index (`.csv`)** creates one `tab-groups.csv` file for the scanned grouped tabs. It includes export timestamp, group order, group ID, group name, tab order, tab index, tab ID, cleaned page title, and page URL.
-
-## User-Selected Folder Export
-
-The primary export path uses the File System Access API. Click **Choose output folder** before exporting, then grant read/write access to the chosen folder. The browser exposes the selected folder name to the extension, but it does not expose the full absolute path.
-
-The checkbox **Create TabPack root folder inside selected output folder** is enabled by default. When enabled, group folders are created inside `TabPack/`. When disabled, group folders are written directly inside the selected folder.
-
-TabPack is not limited to `Downloads/TabPack`. The user-selected folder flow is the main workflow.
-
-## Downloads Fallback
-
-If `window.showDirectoryPicker()` is unavailable, blocked, or write permission is denied, the extension shows a clearly labeled fallback option. The fallback writes to:
-
-```text
-Downloads/TabPack/
-```
-
-The fallback is not silent and does not use repeated save dialogs for every file. For HTML asset modes, selected-folder export keeps `N.html` and `N_files/` pairs together more reliably than the Downloads fallback.
-
-## Install for Development
-
-1. Open `edge://extensions` in Microsoft Edge or `chrome://extensions` in Chrome.
-2. Enable **Developer mode**.
-3. Click **Load unpacked**.
-4. Select the `extension/` folder inside this project.
-
-## Project Structure
-
-Runtime extension files live under `extension/`. Repo-level files are for documentation, validation, testing, and release packaging.
-
-```text
-extension/
-  manifest.json
-  background/
-  popup/
-  export/
-  shared/
-  assets/icons/
-docs/store/
-scripts/
-dist/
-```
-
-Store ZIPs should contain the contents of `extension/` at the ZIP root, with `manifest.json` directly inside the archive.
-
-## Release Packaging
-
-Run validation and build release ZIPs with:
-
-```text
-npm run validate
-npm run build
-```
-
-`npm run build:edge` writes `dist/tabpack-edge-<version>.zip`. `npm run build:chrome` writes `dist/tabpack-chrome-<version>.zip`. Generated ZIP files are ignored by git.
-
-## Use
-
-1. Open tabs in the browser and place the tabs you want to export into tab groups.
+1. Put the tabs you want to export into browser tab groups.
 2. Click the TabPack extension button.
 3. Click **Open TabPack**.
 4. Choose an export mode.
 5. Click **Choose output folder** and grant read/write access.
 6. Click **Scan grouped tabs**.
-7. Review the preview.
+7. Review the preview and skipped tabs.
 8. Click **Export grouped tabs**.
-9. During a long export, click **Stop export** to stop before the next queued page begins. In-flight asset fetches are aborted when the browser allows it.
+
+During a long export, click **Stop export** to stop before the next queued page begins. In-flight browser operations and asset fetches are stopped when the browser allows it.
+
+## Export Modes
+
+| Mode | Output | Best For |
+| --- | --- | --- |
+| HTML page, online assets | `1.html` | Lightweight page snapshots that may still load live web assets when opened online. |
+| HTML page, local asset paths | `1.html` | Comparing root HTML against asset-folder modes. References point at local folders, but asset folders are not created. |
+| HTML page + relevant assets | `1.html` + `1_files/` | The default mode. Saves direct page resources such as scripts, stylesheets, images, icons, media, frames, and `srcset` entries. |
+| HTML page + all assets | `1.html` + `1_files/` | A deeper archive that also follows stylesheet `url(...)` and `@import` references recursively. May save many files on large sites. |
+| MHTML page archives | `1.mhtml` | Single-file page archives using Chromium's official `chrome.pageCapture.saveAsMHTML` API. |
+| CSV page index | `tab-groups.csv` | A structured index of grouped tabs without saving page content. |
+
+In the relevant-assets mode, stylesheet-internal `url(...)` and `@import` references are kept as absolute web URLs instead of being followed recursively. The all-assets mode follows those references and can therefore save many more files.
+
+HTML snapshot modes are best-effort because Chromium does not expose the browser's exact native "Save Page Complete" pipeline to extensions. MHTML is the most official single-file capture path, but it can still fail or produce imperfect archives on complex or restricted pages.
 
 ## What Gets Exported
 
@@ -111,20 +83,35 @@ npm run build
 - `edge://`, `chrome://`, extension pages, `file://`, `about:blank`, and other unsupported URLs are skipped.
 - Collapsed tab groups are included when their tabs exist in the current window.
 
-## File and Folder Names
+CSV exports include export timestamp, group order, group ID, group name, tab order, tab index, tab ID, cleaned page title, and page URL.
+
+## Destination Folders
+
+The main export flow uses the File System Access API. Click **Choose output folder** and grant read/write access to the folder where TabPack should write files. Browsers expose the selected folder name to the extension, but not the full absolute path.
+
+The checkbox **Create TabPack root folder inside selected output folder** is enabled by default. When enabled, group folders are created inside `TabPack/`. When disabled, group folders are written directly inside the selected folder.
+
+If `window.showDirectoryPicker()` is unavailable, blocked, or write permission is denied, TabPack shows a clearly labeled fallback option. The fallback writes to:
+
+```text
+Downloads/TabPack/
+```
+
+The fallback is never silent. For HTML asset modes, selected-folder export keeps `N.html` and `N_files/` pairs together more reliably than browser-download fallback handling.
+
+## File Naming
 
 Group folder names come from visible browser tab group names. Untitled groups use `Group_<groupId>`. Folder names are sanitized for Windows compatibility, and duplicate sanitized group names get a deterministic suffix such as `__group_<groupId>`.
 
-HTML page modes write:
+Page files are numbered by tab order:
 
 ```text
 1.html
 2.html
+3.html
 ```
 
-The local-asset-paths HTML mode points at `1_files/`, `2_files/`, and so on, but does not create those folders.
-
-HTML asset modes write paired output:
+HTML asset modes create paired folders:
 
 ```text
 1.html
@@ -141,36 +128,45 @@ MHTML mode writes:
 3.mhtml
 ```
 
-CSV mode writes one file at the export root:
+CSV mode writes:
 
 ```text
 tab-groups.csv
 ```
 
-Page titles are not used in filenames.
+Page titles are not used in filenames. By default, existing files are not overwritten. If `1.html` or `1_files/` already exists, TabPack writes `1 (1).html` and `1 (1)_files/`. An overwrite mode is available in the export screen, but it is not the default.
 
-By default, existing files are not overwritten. In HTML asset modes, conflicts are handled as pairs: if `1.html` or `1_files/` already exists, TabPack saves `1 (1).html` and `1 (1)_files/`. An overwrite mode is available but is not the default. In HTML page modes, only the `.html` filename is uniquified or overwritten.
+## Privacy
 
-## Privacy and Security
+TabPack is designed to stay local.
 
-- Fully local extension.
 - No uploads.
-- No external servers.
+- No TabPack backend service.
 - No analytics.
 - No telemetry.
 - No login.
 - No export-time refetch of the page URL itself.
-- HTML asset modes fetch page assets referenced by the already-open page so they can write local `N_files/` folders.
+
+HTML asset modes fetch asset URLs referenced by the already-open page so TabPack can write local `N_files/` folders. Those asset requests may contact the sites and CDNs already referenced by the page.
 
 ## Permissions
 
-TabPack requests `tabs`, `tabGroups`, `pageCapture`, `downloads`, and `scripting`. It also requests `http://*/*` and `https://*/*` host permissions so it can serialize open HTTP/HTTPS pages and fetch referenced assets for HTML asset modes.
+TabPack requests only the permissions needed to inspect grouped tabs and save exports.
+
+| Permission | Why It Is Needed |
+| --- | --- |
+| `tabs` | Read tab titles, URLs, indexes, and window membership for export planning. |
+| `tabGroups` | Read browser tab group names, IDs, and ordering. |
+| `pageCapture` | Save tabs as MHTML archives. |
+| `downloads` | Provide the explicit `Downloads/TabPack/` fallback. |
+| `scripting` | Run the HTML serializer inside exported HTTP/HTTPS tabs. |
+| `http://*/*`, `https://*/*` | Serialize open web pages and fetch referenced assets for HTML asset modes. |
 
 HTML export uses the standard `scripting` API when the browser exposes it to the export page. If that API is unavailable there, TabPack asks its background service worker to run the same serializer in each exported HTTP/HTTPS tab.
 
 ## Known Limitations
 
-- HTML snapshot and asset modes are best-effort. Chromium browsers do not expose the exact native "Save Page Complete" implementation to extensions.
+- HTML snapshot and asset modes are best-effort.
 - Dynamic resources, protected assets, canvas content, service-worker state, cross-origin frames, late-loaded data, or blocked requests may not be captured.
 - If some assets fail, the `.html` file is still written and the progress log reports asset warnings.
 - CSV mode is an index only; it does not save page content.
@@ -189,3 +185,44 @@ HTML export uses the standard `scripting` API when the browser exposes it to the
 - If HTML export says the background serializer is unavailable, reload the unpacked extension from the browser extensions page, approve any new permissions, and reopen TabPack.
 - If HTML export says a script execution API is unavailable, reload the unpacked extension from the browser extensions page, approve any new permissions, and reopen TabPack.
 - If MHTML capture fails for some pages, retry with an HTML mode or export a CSV index.
+
+## Development
+
+Runtime extension files live under `extension/`. Repo-level files are for documentation, validation, testing, and release packaging.
+
+```text
+extension/
+  manifest.json
+  background/
+  popup/
+  export/
+  shared/
+  assets/icons/
+docs/store/
+scripts/
+dist/
+```
+
+Run validation:
+
+```text
+npm run validate
+```
+
+Build release ZIPs:
+
+```text
+npm run build
+```
+
+`npm run build:edge` writes `dist/tabpack-edge-<version>.zip`. `npm run build:chrome` writes `dist/tabpack-chrome-<version>.zip`. Generated ZIP files are ignored by git.
+
+Store ZIPs contain the contents of `extension/` at the ZIP root, with `manifest.json` directly inside the archive.
+
+## Contributing
+
+Issues, fixes, documentation improvements, and careful feature ideas are welcome. Please keep changes aligned with TabPack's core promise: local-first tab-group export with clear user control over what gets written and where.
+
+## License
+
+TabPack is free and open-source software released under the [MIT License](LICENSE).
