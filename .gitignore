@@ -2,5 +2,8 @@ dist/*.zip
 dist/*.crx
 node_modules/
 .venv/
+test-results/
+playwright-report/
+blob-report/
 .DS_Store
 Thumbs.db

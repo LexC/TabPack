@@ -8,12 +8,30 @@
   </head>
   <body>
     <main>
-      <h1>TabPack</h1>
-      <p>Save Tab Groups as Local Files</p>
+      <header>
+        <h1>TabPack</h1>
+        <p>Save Tab Groups as Local Files</p>
+      </header>
+      <section class="summary" aria-label="Current window summary">
+        <div>
+          <strong id="groupCount">-</strong>
+          <span>Groups</span>
+        </div>
+        <div>
+          <strong id="eligibleCount">-</strong>
+          <span>Exportable</span>
+        </div>
+        <div>
+          <strong id="skippedCount">-</strong>
+          <span>Skipped</span>
+        </div>
+      </section>
+      <p id="summaryDetail" class="detail">Checking current window...</p>
       <button id="openExport" type="button">Open TabPack</button>
     </main>
     <script src="../shared/constants.js"></script>
     <script src="../shared/browser-api.js"></script>
+    <script src="../shared/export-helpers.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

@@ -24,8 +24,19 @@ const {
   executeScript,
   executeLegacyTabScript,
   sendRuntimeMessage,
-  saveAsMHTML
+  saveAsMHTML,
+  storageGet,
+  storageSet,
+  permissionsContains,
+  permissionsRequest
 } = globalThis.TabPackBrowserApi;
+
+const ExportHelpers = globalThis.TabPackExportHelpers;
+const EXPORT_PREFERENCES_KEY = "exportPreferences";
+const DIRECTORY_DB_NAME = "TabPackDirectoryHandles";
+const DIRECTORY_DB_VERSION = 1;
+const DIRECTORY_STORE_NAME = "handles";
+const DIRECTORY_HANDLE_KEY = "outputDirectory";
 
 const NO_GROUP_ID = chrome.tabGroups && typeof chrome.tabGroups.TAB_GROUP_ID_NONE === "number"
   ? chrome.tabGroups.TAB_GROUP_ID_NONE
@@ -38,7 +49,9 @@ const state = {
   skippedTabs: [],
   isExporting: false,
   stopRequested: false,
-  exportAbortController: null
+  exportAbortController: null,
+  preferencesLoaded: false,
+  optionalHostPermissionsGranted: false
 };
 
 const elements = {};
@@ -46,10 +59,13 @@ const elements = {};
 document.addEventListener("DOMContentLoaded", () => {
   bindElements();
   bindEvents();
-  initializeDestinationUi();
-  resetCounters();
-  setExportProgressIdle("Export progress will appear here when an export starts.");
-  updateExportAvailability();
+  initializeExportPage().catch((error) => {
+    logMessage(`TabPack initialization warning: ${getErrorMessage(error)}`, "warning");
+    initializeDestinationUi();
+    resetCounters();
+    setExportProgressIdle("Export progress will appear here when an export starts.");
+    updateExportAvailability();
+  });
 });
 
 function bindElements() {
@@ -77,6 +93,7 @@ function bindElements() {
   elements.skippedCount = document.getElementById("skippedCount");
   elements.successCount = document.getElementById("successCount");
   elements.failureCount = document.getElementById("failureCount");
+  elements.selectedCount = document.getElementById("selectedCount");
   elements.modeInputs = Array.from(document.querySelectorAll("input[name='exportMode']"));
 }
 
@@ -85,21 +102,49 @@ function bindEvents() {
   elements.exportButton.addEventListener("click", exportGroupedTabs);
   elements.stopExportButton.addEventListener("click", stopExport);
   elements.chooseFolderButton.addEventListener("click", chooseOutputFolder);
-  elements.createRootFolder.addEventListener("change", refreshPlanDisplay);
+  elements.createRootFolder.addEventListener("change", () => {
+    saveExportPreferences();
+    refreshPlanDisplay();
+  });
   elements.useDownloadsFallback.addEventListener("change", () => {
+    saveExportPreferences();
     updateExportAvailability();
     refreshPlanDisplay();
   });
 
   for (const input of elements.modeInputs) {
-    input.addEventListener("change", refreshPlanDisplay);
+    input.addEventListener("change", () => {
+      saveExportPreferences();
+      refreshPlanDisplay();
+    });
   }
 
   for (const button of elements.conflictButtons) {
     button.addEventListener("click", () => {
       setConflictBehavior(button.dataset.conflictValue);
+      saveExportPreferences();
     });
   }
+}
+
+async function initializeExportPage() {
+  await loadExportPreferences();
+  refreshOptionalHostPermissionState();
+  initializeDestinationUi();
+  await restoreRememberedOutputFolder();
+  resetCounters();
+  setExportProgressIdle("Export progress will appear here when an export starts.");
+  updateExportAvailability();
+}
+
+function refreshOptionalHostPermissionState() {
+  permissionsContains({
+    origins: ExportHelpers.getOptionalHostOrigins()
+  }).then((granted) => {
+    state.optionalHostPermissionsGranted = granted;
+  }).catch((_error) => {
+    state.optionalHostPermissionsGranted = false;
+  });
 }
 
 function stopExport() {
@@ -140,6 +185,62 @@ function setConflictBehavior(value) {
   }
 }
 
+async function loadExportPreferences() {
+  try {
+    const items = await storageGet(EXPORT_PREFERENCES_KEY);
+    const preferences = items && items[EXPORT_PREFERENCES_KEY] ? items[EXPORT_PREFERENCES_KEY] : {};
+
+    if (isKnownMode(preferences.mode)) {
+      for (const input of elements.modeInputs) {
+        input.checked = input.value === preferences.mode;
+      }
+    }
+
+    if (preferences.conflictBehavior === "overwrite" || preferences.conflictBehavior === "uniquify") {
+      setConflictBehavior(preferences.conflictBehavior);
+    }
+
+    if (typeof preferences.createRootFolder === "boolean") {
+      elements.createRootFolder.checked = preferences.createRootFolder;
+    }
+
+    if (typeof preferences.useDownloadsFallback === "boolean") {
+      elements.useDownloadsFallback.checked = preferences.useDownloadsFallback;
+    }
+
+  } catch (error) {
+    logMessage(`Could not load saved export preferences: ${getErrorMessage(error)}`, "warning");
+  } finally {
+    state.preferencesLoaded = true;
+  }
+}
+
+function saveExportPreferences() {
+  if (!state.preferencesLoaded) {
+    return;
+  }
+
+  storageSet({
+    [EXPORT_PREFERENCES_KEY]: {
+      mode: getSelectedMode(),
+      conflictBehavior: elements.conflictBehavior.value,
+      createRootFolder: elements.createRootFolder.checked,
+      useDownloadsFallback: elements.useDownloadsFallback.checked
+    }
+  }).catch((error) => {
+    logMessage(`Could not save export preferences: ${getErrorMessage(error)}`, "warning");
+  });
+}
+
+function isKnownMode(mode) {
+  return mode === HTML_PAGE_MODE ||
+    mode === HTML_LOCAL_ASSET_PATHS_MODE ||
+    mode === HTML_RELEVANT_ASSETS_MODE ||
+    mode === HTML_ALL_ASSETS_MODE ||
+    mode === MHTML_MODE ||
+    mode === CSV_MODE;
+}
+
 function initializeDestinationUi() {
   if (!supportsFileSystemAccess()) {
     elements.chooseFolderButton.disabled = true;
@@ -153,6 +254,48 @@ function initializeDestinationUi() {
 
   elements.selectedFolderText.textContent = "No output folder selected.";
   elements.selectedFolderText.className = "status";
+}
+
+async function restoreRememberedOutputFolder() {
+  if (!supportsFileSystemAccess() || typeof indexedDB === "undefined") {
+    return;
+  }
+
+  try {
+    const directoryHandle = await readRememberedDirectoryHandle();
+    if (!directoryHandle) {
+      return;
+    }
+
+    const currentPermission = typeof directoryHandle.queryPermission === "function"
+      ? await directoryHandle.queryPermission({ mode: "readwrite" })
+      : "granted";
+
+    if (currentPermission !== "granted") {
+      elements.selectedFolderText.textContent = "A remembered output folder exists, but write permission must be granted again with Choose output folder.";
+      elements.selectedFolderText.className = "status warning";
+      logMessage("Remembered output folder found, but write permission is not currently granted.", "warning");
+      return;
+    }
+
+    state.selectedDirectoryHandle = directoryHandle;
+    state.selectedDirectoryWritable = true;
+    renderSelectedDirectoryStatus(directoryHandle, "Remembered folder name");
+    logMessage(`Restored remembered output folder name: ${directoryHandle.name || "chosen folder"}.`, "success");
+  } catch (error) {
+    logMessage(`Could not restore remembered output folder: ${getErrorMessage(error)}`, "warning");
+  }
+}
+
+function renderSelectedDirectoryStatus(directoryHandle, label = "Selected folder name") {
+  elements.selectedFolderText.textContent = `${label}: `;
+
+  const folderName = document.createElement("span");
+  folderName.className = "folder-name";
+  folderName.textContent = directoryHandle.name || "chosen folder";
+  elements.selectedFolderText.append(folderName);
+  elements.selectedFolderText.append(" (full path is not exposed to extension pages)");
+  elements.selectedFolderText.className = "status good";
 }
 
 function supportsFileSystemAccess() {
@@ -179,14 +322,11 @@ async function chooseOutputFolder() {
     state.selectedDirectoryHandle = directoryHandle;
     state.selectedDirectoryWritable = true;
     elements.useDownloadsFallback.checked = false;
-    elements.selectedFolderText.textContent = "Selected folder name: ";
-
-    const folderName = document.createElement("span");
-    folderName.className = "folder-name";
-    folderName.textContent = directoryHandle.name || "chosen folder";
-    elements.selectedFolderText.append(folderName);
-    elements.selectedFolderText.append(" (full path is not exposed to extension pages)");
-    elements.selectedFolderText.className = "status good";
+    renderSelectedDirectoryStatus(directoryHandle);
+    saveExportPreferences();
+    saveRememberedDirectoryHandle(directoryHandle).catch((error) => {
+      logMessage(`Could not remember the selected output folder: ${getErrorMessage(error)}`, "warning");
+    });
 
     logMessage(`Selected output folder name: ${directoryHandle.name || "chosen folder"}. Full path is not exposed to extension pages.`, "success");
   } catch (error) {
@@ -227,6 +367,72 @@ async function verifyDirectoryPermission(directoryHandle) {
   return true;
 }
 
+function openDirectoryDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DIRECTORY_DB_NAME, DIRECTORY_DB_VERSION);
+
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains(DIRECTORY_STORE_NAME)) {
+        database.createObjectStore(DIRECTORY_STORE_NAME);
+      }
+    };
+
+    request.onsuccess = () => {
+      resolve(request.result);
+    };
+
+    request.onerror = () => {
+      reject(request.error || new Error("IndexedDB open failed."));
+    };
+  });
+}
+
+async function saveRememberedDirectoryHandle(directoryHandle) {
+  if (typeof indexedDB === "undefined") {
+    return;
+  }
+
+  const database = await openDirectoryDatabase();
+  try {
+    await runDirectoryStoreRequest(database, "readwrite", (store) => {
+      return store.put(directoryHandle, DIRECTORY_HANDLE_KEY);
+    });
+  } finally {
+    database.close();
+  }
+}
+
+async function readRememberedDirectoryHandle() {
+  const database = await openDirectoryDatabase();
+  try {
+    return await runDirectoryStoreRequest(database, "readonly", (store) => {
+      return store.get(DIRECTORY_HANDLE_KEY);
+    });
+  } finally {
+    database.close();
+  }
+}
+
+function runDirectoryStoreRequest(database, mode, makeRequest) {
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(DIRECTORY_STORE_NAME, mode);
+    const request = makeRequest(transaction.objectStore(DIRECTORY_STORE_NAME));
+
+    request.onsuccess = () => {
+      resolve(request.result);
+    };
+
+    request.onerror = () => {
+      reject(request.error || new Error("IndexedDB request failed."));
+    };
+
+    transaction.onerror = () => {
+      reject(transaction.error || new Error("IndexedDB transaction failed."));
+    };
+  });
+}
+
 function revealDownloadsFallback(message) {
   elements.fallbackPanel.classList.remove("hidden");
   elements.fallbackMessage.textContent = `${message} Fallback export writes to Downloads/${ROOT_FOLDER_NAME}/.`;
@@ -256,7 +462,7 @@ async function scanGroupedTabs() {
     if (plan.totalEligibleTabs === 0) {
       logMessage("Scan finished. No eligible grouped HTTP/HTTPS tabs were found.", "warning");
     } else {
-      logMessage(`Scan finished. ${plan.totalEligibleTabs} eligible grouped tab(s), ${plan.skippedTabs.length} skipped.`, "success");
+      logMessage(`Scan finished. ${plan.totalEligibleTabs} eligible grouped tab(s), ${plan.totalSelectedTabs} selected by default, ${plan.skippedTabs.length} skipped.`, "success");
     }
   } catch (error) {
     clearPreview("Scan failed.");
@@ -272,88 +478,11 @@ function queryCurrentWindowTabs() {
 }
 
 async function buildExportPlan(tabs) {
-  const skippedTabs = [];
-  const eligibleTabs = [];
-  const sortedTabs = [...tabs].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-
-  for (const tab of sortedTabs) {
-    if (typeof tab.id !== "number") {
-      skippedTabs.push(makeSkippedTab(tab, "missing tab ID"));
-      continue;
-    }
-
-    if (tab.groupId === NO_GROUP_ID || typeof tab.groupId !== "number") {
-      skippedTabs.push(makeSkippedTab(tab, "ungrouped"));
-      continue;
-    }
-
-    if (!isSupportedTabUrl(tab.url)) {
-      skippedTabs.push(makeSkippedTab(tab, "unsupported URL"));
-      continue;
-    }
-
-    eligibleTabs.push(tab);
-  }
-
-  const groupIds = [...new Set(eligibleTabs.map((tab) => tab.groupId))];
+  const groupIds = ExportHelpers.collectTabGroupIds(tabs, {
+    noGroupId: NO_GROUP_ID
+  });
   const groupMetadata = await loadTabGroupMetadata(groupIds);
-  const groupsById = new Map();
-
-  for (const tab of eligibleTabs) {
-    const metadata = groupMetadata.get(tab.groupId);
-    if (!metadata) {
-      skippedTabs.push(makeSkippedTab(tab, "missing group metadata"));
-      continue;
-    }
-
-    if (!groupsById.has(tab.groupId)) {
-      const originalTitle = metadata.title || `Group_${tab.groupId}`;
-      groupsById.set(tab.groupId, {
-        groupId: tab.groupId,
-        originalTitle,
-        sanitizedFolderName: "",
-        firstTabIndex: tab.index ?? 0,
-        files: []
-      });
-    }
-
-    groupsById.get(tab.groupId).files.push({
-      tabId: tab.id,
-      tabIndex: tab.index ?? 0,
-      order: 0,
-      title: tab.title || tab.url || "Untitled page",
-      url: tab.url,
-      outputExtension: "",
-      baseFileName: "",
-      fileName: "",
-      referenceAssetFolderName: "",
-      assetFolderName: "",
-      plannedRelativePath: "",
-      plannedReferenceAssetFolderPath: "",
-      plannedAssetFolderPath: ""
-    });
-  }
-
-  const groups = [...groupsById.values()].sort((a, b) => a.firstTabIndex - b.firstTabIndex);
-  assignUniqueFolderNames(groups);
-
-  for (const group of groups) {
-    group.files.sort((a, b) => a.tabIndex - b.tabIndex);
-    group.files.forEach((file, index) => {
-      file.order = index + 1;
-    });
-  }
-
-  const plan = {
-    mode: getSelectedMode(),
-    generatedAt: new Date().toISOString(),
-    groups,
-    skippedTabs,
-    totalEligibleTabs: groups.reduce((total, group) => total + group.files.length, 0)
-  };
-
-  applyModeAndPaths(plan);
-  return plan;
+  return ExportHelpers.buildExportPlanFromTabs(tabs, groupMetadata, getPathOptions());
 }
 
 async function loadTabGroupMetadata(groupIds) {
@@ -468,6 +597,22 @@ async function exportGroupedTabs() {
     return;
   }
 
+  applyModeAndPaths(state.exportPlan);
+
+  if (state.exportPlan.mode !== CSV_MODE && state.exportPlan.totalSelectedTabs === 0) {
+    logMessage("Select at least one grouped HTTP/HTTPS tab before exporting this mode.", "warning");
+    updateExportAvailability();
+    return;
+  }
+
+  try {
+    await ensureOptionalHostPermissionsForExport(state.exportPlan);
+  } catch (error) {
+    logMessage(getErrorMessage(error), "error");
+    updateExportAvailability();
+    return;
+  }
+
   state.isExporting = true;
   state.stopRequested = false;
   state.exportAbortController = typeof AbortController === "function"
@@ -478,7 +623,6 @@ async function exportGroupedTabs() {
   elements.scanButton.disabled = true;
   updateExportAvailability();
 
-  applyModeAndPaths(state.exportPlan);
   renderPreview();
 
   const result = {
@@ -486,7 +630,7 @@ async function exportGroupedTabs() {
     failure: 0,
     assetWarnings: 0,
     completedItems: 0,
-    totalItems: state.exportPlan.mode === CSV_MODE ? 1 : state.exportPlan.totalEligibleTabs,
+    totalItems: state.exportPlan.mode === CSV_MODE ? 1 : state.exportPlan.totalSelectedTabs,
     progressUnit: state.exportPlan.mode === CSV_MODE ? "file" : "page"
   };
   resetExportProgress(result.totalItems, result.progressUnit);
@@ -508,15 +652,15 @@ async function exportGroupedTabs() {
       ? ` ${result.assetWarnings} asset warning(s).`
       : "";
     if (state.stopRequested) {
-      logMessage(`Export stopped by user. ${result.success} succeeded, ${result.failure} failed, ${state.skippedTabs.length} skipped.${warningText}`, "warning");
+      logMessage(`Export stopped by user. ${result.success} succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.${warningText}`, "warning");
       finishExportProgress(result, "stopped");
     } else {
-      logMessage(`Export finished to ${destinationLabel}. ${result.success} succeeded, ${result.failure} failed, ${state.skippedTabs.length} skipped.${warningText}`, result.failure > 0 ? "warning" : "success");
+      logMessage(`Export finished to ${destinationLabel}. ${result.success} succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.${warningText}`, result.failure > 0 ? "warning" : "success");
       finishExportProgress(result, result.failure > 0 ? "warning" : "done");
     }
   } catch (error) {
     if (isExportStopError(error)) {
-      logMessage(`Export stopped by user. ${result.success} succeeded, ${result.failure} failed, ${state.skippedTabs.length} skipped.`, "warning");
+      logMessage(`Export stopped by user. ${result.success} succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.`, "warning");
       finishExportProgress(result, "stopped");
     } else {
       logMessage(`Export stopped before completion: ${getErrorMessage(error)}`, "error");
@@ -559,6 +703,32 @@ async function ensureSelectedDirectoryReady() {
   state.selectedDirectoryWritable = true;
 }
 
+async function ensureOptionalHostPermissionsForExport(plan) {
+  if (!ExportHelpers.modeRequiresHostAccess(plan.mode) || plan.totalSelectedTabs === 0) {
+    return;
+  }
+
+  if (state.optionalHostPermissionsGranted) {
+    return;
+  }
+
+  const origins = ExportHelpers.getOptionalHostOrigins();
+  logMessage("HTML export needs page access so TabPack can serialize selected HTTP/HTTPS tabs and fetch referenced assets.", "warning");
+  const granted = await permissionsRequest({ origins });
+  if (!granted) {
+    const alreadyGranted = await permissionsContains({ origins });
+    if (alreadyGranted) {
+      state.optionalHostPermissionsGranted = true;
+      return;
+    }
+
+    throw new Error("HTML export was canceled because page access permission was not granted.");
+  }
+
+  state.optionalHostPermissionsGranted = true;
+  logMessage("Page access permission granted for HTML export.", "success");
+}
+
 async function exportWithFileSystemAccess(plan, result) {
   throwIfExportStopped();
   const exportRootHandle = await getExportRootDirectory(state.selectedDirectoryHandle);
@@ -571,6 +741,10 @@ async function exportWithFileSystemAccess(plan, result) {
 
   for (const group of plan.groups) {
     throwIfExportStopped();
+    if (group.selectedCount === 0) {
+      continue;
+    }
+
     let groupDirectoryHandle;
 
     try {
@@ -581,14 +755,18 @@ async function exportWithFileSystemAccess(plan, result) {
     } catch (error) {
       const message = `Could not create/open folder ${group.sanitizedFolderName}: ${getErrorMessage(error)}`;
       logMessage(message, "error");
-      result.failure += group.files.length;
+      result.failure += group.selectedCount;
       setCounter(elements.failureCount, result.failure);
-      markExportItemsComplete(result, group.files.length);
+      markExportItemsComplete(result, group.selectedCount);
       continue;
     }
 
     for (const file of group.files) {
       throwIfExportStopped();
+      if (!file.selected) {
+        continue;
+      }
+
       if (isHtmlSnapshotMode(plan.mode)) {
         await exportHtmlSnapshotWithFileSystem(groupDirectoryHandle, group, file, plan.mode, result);
       } else {
@@ -633,7 +811,7 @@ async function exportCsvWithFileSystem(exportRootHandle, plan, result) {
     result.success += 1;
     setCounter(elements.successCount, result.success);
     markExportItemsComplete(result);
-    logMessage(`Saved ${finalFileName} with ${plan.totalEligibleTabs} grouped tab row(s).`, "success");
+    logMessage(`Saved ${finalFileName} with ${getCsvAuditRowCount(plan)} audit row(s).`, "success");
   } catch (error) {
     if (isExportStopError(error)) {
       throw error;
@@ -886,6 +1064,10 @@ async function exportWithDownloadsFallback(plan, result) {
     throwIfExportStopped();
     for (const file of group.files) {
       throwIfExportStopped();
+      if (!file.selected) {
+        continue;
+      }
+
       if (isHtmlSnapshotMode(plan.mode)) {
         await exportHtmlSnapshotWithDownloadsFallback(group, file, plan.mode, result);
       } else {
@@ -930,7 +1112,7 @@ async function exportCsvWithDownloadsFallback(plan, result) {
     result.success += 1;
     setCounter(elements.successCount, result.success);
     markExportItemsComplete(result);
-    logMessage(`Queued fallback download ${filename} with ${plan.totalEligibleTabs} grouped tab row(s).`, "success");
+    logMessage(`Queued fallback download ${filename} with ${getCsvAuditRowCount(plan)} audit row(s).`, "success");
   } catch (error) {
     if (isExportStopError(error)) {
       throw error;
@@ -1044,36 +1226,11 @@ function createCsvBlob(plan) {
 }
 
 function generateCsvIndex(plan) {
-  const exportedAt = new Date().toISOString();
-  const rows = [[
-    "exported_at",
-    "group_order",
-    "group_id",
-    "group_name",
-    "tab_order_in_group",
-    "tab_index",
-    "tab_id",
-    "page_title",
-    "page_url"
-  ]];
+  return ExportHelpers.generateCsvIndex(plan);
+}
 
-  plan.groups.forEach((group, groupIndex) => {
-    group.files.forEach((file) => {
-      rows.push([
-        exportedAt,
-        String(groupIndex + 1),
-        String(group.groupId),
-        group.originalTitle,
-        String(file.order),
-        String(file.tabIndex),
-        String(file.tabId),
-        cleanCsvPageTitle(file.title),
-        file.url
-      ]);
-    });
-  });
-
-  return rows.map((row) => row.map(formatCsvCell).join(",")).join("\r\n") + "\r\n";
+function getCsvAuditRowCount(plan) {
+  return (plan.totalEligibleTabs || 0) + (plan.skippedTabs ? plan.skippedTabs.length : 0);
 }
 
 function formatCsvCell(value) {
@@ -1630,48 +1787,26 @@ function refreshPlanDisplay() {
 }
 
 function applyModeAndPaths(plan) {
-  const mode = getSelectedMode();
-  const extension = mode === MHTML_MODE ? "mhtml" : "html";
-  plan.mode = mode;
-  plan.csvFileName = CSV_FILE_NAME;
-  plan.csvRelativePath = mode === CSV_MODE ? buildRootRelativePath(CSV_FILE_NAME) : "";
+  ExportHelpers.applyModeAndPaths(plan, getPathOptions());
+  updateScanCounters(plan);
+}
 
-  for (const group of plan.groups) {
-    for (const file of group.files) {
-      file.outputExtension = mode === CSV_MODE ? "" : extension;
-      file.baseFileName = String(file.order);
-      file.fileName = mode === CSV_MODE ? "" : `${file.baseFileName}.${extension}`;
-      file.referenceAssetFolderName = isHtmlLocalReferenceMode(mode) || isHtmlAssetMode(mode)
-        ? `${file.baseFileName}_files`
-        : "";
-      file.assetFolderName = isHtmlAssetMode(mode) ? file.referenceAssetFolderName : "";
-      file.plannedRelativePath = file.fileName
-        ? buildPlannedRelativePath(group.sanitizedFolderName, file.fileName)
-        : "";
-      file.plannedReferenceAssetFolderPath = isHtmlLocalReferenceMode(mode)
-        ? buildPlannedRelativePath(group.sanitizedFolderName, `${file.referenceAssetFolderName}/`)
-        : "";
-      file.plannedAssetFolderPath = file.assetFolderName
-        ? buildPlannedRelativePath(group.sanitizedFolderName, `${file.assetFolderName}/`)
-        : "";
-    }
-  }
+function getPathOptions() {
+  return {
+    mode: getSelectedMode(),
+    rootFolderName: ROOT_FOLDER_NAME,
+    createRootFolder: elements.createRootFolder.checked,
+    downloadsFallback: isDownloadsFallbackSelected(),
+    noGroupId: NO_GROUP_ID
+  };
 }
 
 function buildPlannedRelativePath(groupFolderName, fileName) {
-  if (isDownloadsFallbackSelected() || elements.createRootFolder.checked) {
-    return `${ROOT_FOLDER_NAME}/${groupFolderName}/${fileName}`;
-  }
-
-  return `${groupFolderName}/${fileName}`;
+  return ExportHelpers.buildPlannedRelativePath(groupFolderName, fileName, getPathOptions());
 }
 
 function buildRootRelativePath(fileName) {
-  if (isDownloadsFallbackSelected() || elements.createRootFolder.checked) {
-    return `${ROOT_FOLDER_NAME}/${fileName}`;
-  }
-
-  return fileName;
+  return ExportHelpers.buildRootRelativePath(fileName, getPathOptions());
 }
 
 function getSelectedMode() {
@@ -1770,55 +1905,120 @@ function renderPreview() {
     heading.textContent = "CSV page index";
     csvBlock.append(heading);
 
-    const path = document.createElement("p");
-    path.className = "path";
-    path.textContent = state.exportPlan.csvRelativePath;
-    csvBlock.append(path);
-
-    const details = document.createElement("p");
-    details.className = "muted";
-    details.textContent = `${state.exportPlan.totalEligibleTabs} grouped HTTP/HTTPS tab row(s), with group, order, cleaned page title, URL, tab index, and tab ID.`;
-    csvBlock.append(details);
+    const csvFields = document.createElement("div");
+    csvFields.className = "preview-fields";
+    appendPreviewField(csvFields, "CSV file", state.exportPlan.csvRelativePath, {
+      path: true
+    });
+    appendPreviewField(csvFields, "Rows", `${getCsvAuditRowCount(state.exportPlan)} audit rows: selected, deselected, and skipped tabs`);
+    csvBlock.append(csvFields);
 
     fragment.append(csvBlock);
-    elements.preview.append(fragment);
-    return;
   }
 
   for (const group of state.exportPlan.groups) {
     const groupBlock = document.createElement("div");
     groupBlock.className = "group-preview";
 
+    const groupSelection = getGroupSelectionState(group);
+    const groupLabel = document.createElement("label");
+    groupLabel.className = "group-select";
+
+    const groupCheckbox = document.createElement("input");
+    groupCheckbox.type = "checkbox";
+    groupCheckbox.checked = groupSelection.checked;
+    groupCheckbox.indeterminate = groupSelection.indeterminate;
+    groupCheckbox.dataset.groupId = String(group.groupId);
+    groupCheckbox.addEventListener("change", () => {
+      setGroupSelection(group.groupId, groupCheckbox.checked);
+    });
+
+    const groupTitle = document.createElement("span");
+    groupTitle.className = "group-title";
+
     const heading = document.createElement("h3");
-    heading.textContent = `${group.originalTitle} -> ${group.sanitizedFolderName}`;
-    groupBlock.append(heading);
+    heading.textContent = group.originalTitle;
+    groupTitle.append(heading);
+
+    const selectionSummary = document.createElement("span");
+    selectionSummary.className = "selection-summary";
+    selectionSummary.textContent = `${group.selectedCount} of ${group.files.length} selected`;
+    groupTitle.append(selectionSummary);
+
+    if (group.originalTitle !== group.sanitizedFolderName) {
+      const outputFolder = document.createElement("span");
+      outputFolder.className = "selection-summary";
+      outputFolder.textContent = `Output folder: ${group.sanitizedFolderName}`;
+      groupTitle.append(outputFolder);
+    }
+
+    groupLabel.append(groupCheckbox, groupTitle);
+    groupBlock.append(groupLabel);
 
     const list = document.createElement("ul");
     for (const file of group.files) {
       const item = document.createElement("li");
-      const path = document.createElement("span");
-      path.className = "path";
-      path.textContent = file.plannedRelativePath;
-
-      const details = document.createElement("span");
-      details.className = "muted";
-      details.textContent = ` - ${file.title}`;
-
-      item.append(path, details);
-
-      if (file.plannedAssetFolderPath) {
-        const assetPath = document.createElement("div");
-        assetPath.className = "path muted";
-        assetPath.textContent = `${file.plannedAssetFolderPath} ${getAssetFolderPreviewLabel(state.exportPlan.mode)}`;
-        item.append(assetPath);
+      if (!file.selected) {
+        item.className = "deselected";
       }
 
-      if (file.plannedReferenceAssetFolderPath) {
-        const referencePath = document.createElement("div");
-        referencePath.className = "path muted";
-        referencePath.textContent = `${file.plannedReferenceAssetFolderPath} referenced by HTML only; folder is not downloaded`;
-        item.append(referencePath);
+      const tabLabel = document.createElement("label");
+      tabLabel.className = "tab-select";
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = file.selected;
+      checkbox.dataset.selectionKey = file.selectionKey;
+      checkbox.addEventListener("change", () => {
+        setFileSelection(file.selectionKey, checkbox.checked);
+      });
+
+      const body = document.createElement("span");
+      body.className = "tab-preview-body";
+
+      const fields = document.createElement("span");
+      fields.className = "preview-fields";
+      appendPreviewField(fields, "Title", file.title);
+
+      if (state.exportPlan.mode === CSV_MODE) {
+        appendPreviewField(fields, "CSV status", file.selected ? "selected_for_export=true" : "selected_for_export=false");
+        if (file.selected) {
+          appendPreviewField(fields, "Selected order", String(file.selectedOrderInGroup));
+        } else {
+          appendPreviewField(fields, "Status", "Not selected", {
+            note: true
+          });
+        }
+      } else {
+        if (file.selected) {
+          appendPreviewField(fields, "File", file.plannedRelativePath, {
+            path: true
+          });
+        } else {
+          appendPreviewField(fields, "Status", "Not selected", {
+            note: true
+          });
+        }
+
+        if (file.plannedAssetFolderPath) {
+          appendPreviewField(fields, "Assets", `${file.plannedAssetFolderPath} (${getAssetFolderPreviewLabel(state.exportPlan.mode)})`, {
+            path: true
+          });
+        }
+
+        if (file.plannedReferenceAssetFolderPath) {
+          appendPreviewField(fields, "Assets", file.plannedReferenceAssetFolderPath, {
+            path: true
+          });
+          appendPreviewField(fields, "Note", "Folder is referenced only; assets are not downloaded", {
+            note: true
+          });
+        }
       }
+
+      body.append(fields);
+      tabLabel.append(checkbox, body);
+      item.append(tabLabel);
 
       list.append(item);
     }
@@ -1828,6 +2028,68 @@ function renderPreview() {
   }
 
   elements.preview.append(fragment);
+}
+
+function appendPreviewField(container, label, value, options = {}) {
+  const field = document.createElement("span");
+  field.className = "preview-field";
+
+  const labelElement = document.createElement("span");
+  labelElement.className = "preview-label";
+  labelElement.textContent = `${label}:`;
+
+  const valueElement = document.createElement("span");
+  valueElement.className = options.note ? "preview-value preview-note" : "preview-value";
+  if (options.path) {
+    valueElement.classList.add("path");
+  }
+  valueElement.textContent = value;
+
+  field.append(labelElement, valueElement);
+  container.append(field);
+}
+
+function getGroupSelectionState(group) {
+  const selectedCount = group.files.filter((file) => file.selected).length;
+  return {
+    checked: selectedCount > 0 && selectedCount === group.files.length,
+    indeterminate: selectedCount > 0 && selectedCount < group.files.length
+  };
+}
+
+function setGroupSelection(groupId, selected) {
+  if (!state.exportPlan) {
+    return;
+  }
+
+  for (const group of state.exportPlan.groups) {
+    if (group.groupId !== groupId) {
+      continue;
+    }
+
+    for (const file of group.files) {
+      file.selected = selected;
+    }
+    break;
+  }
+
+  refreshPlanDisplay();
+}
+
+function setFileSelection(selectionKey, selected) {
+  if (!state.exportPlan) {
+    return;
+  }
+
+  for (const group of state.exportPlan.groups) {
+    const file = group.files.find((candidate) => candidate.selectionKey === selectionKey);
+    if (file) {
+      file.selected = selected;
+      break;
+    }
+  }
+
+  refreshPlanDisplay();
 }
 
 function getAssetFolderPreviewLabel(mode) {
@@ -1885,20 +2147,26 @@ function clearSkippedTabs() {
 
 function updateExportAvailability() {
   const hasPlan = Boolean(state.exportPlan && state.exportPlan.totalEligibleTabs > 0);
+  const hasSelection = Boolean(state.exportPlan && (
+    state.exportPlan.mode === CSV_MODE ||
+    state.exportPlan.totalSelectedTabs > 0
+  ));
   const hasSelectedFolder = Boolean(state.selectedDirectoryHandle && state.selectedDirectoryWritable);
   const hasDestination = hasSelectedFolder || isDownloadsFallbackSelected();
-  elements.exportButton.disabled = state.isExporting || !hasPlan || !hasDestination;
+  elements.exportButton.disabled = state.isExporting || !hasPlan || !hasSelection || !hasDestination;
   elements.stopExportButton.disabled = !state.isExporting || state.stopRequested;
 }
 
 function updateScanCounters(plan) {
   setCounter(elements.eligibleCount, plan.totalEligibleTabs);
+  setCounter(elements.selectedCount, plan.totalSelectedTabs || 0);
   setCounter(elements.skippedCount, plan.skippedTabs.length);
   elements.skippedSummaryText.textContent = `(${plan.skippedTabs.length})`;
 }
 
 function resetCounters() {
   setCounter(elements.eligibleCount, 0);
+  setCounter(elements.selectedCount, 0);
   setCounter(elements.skippedCount, 0);
   setCounter(elements.successCount, 0);
   setCounter(elements.failureCount, 0);

@@ -18,6 +18,7 @@ const expectedFiles = [
   "export/page-serializer.js",
   "shared/constants.js",
   "shared/browser-api.js",
+  "shared/export-helpers.js",
   "assets/icons/icon16.png",
   "assets/icons/icon32.png",
   "assets/icons/icon48.png",
@@ -108,15 +109,19 @@ function validateManifest(manifest, errors) {
     validateManifestFile(relativePath, `action.default_icon.${size}`, errors);
   }
 
-  for (const permission of ["tabs", "tabGroups", "pageCapture", "downloads", "scripting"]) {
+  for (const permission of ["tabs", "tabGroups", "pageCapture", "downloads", "scripting", "storage"]) {
     if (!manifest.permissions?.includes(permission)) {
       errors.push(`manifest.json is missing required permission: ${permission}`);
     }
   }
 
   for (const hostPermission of ["http://*/*", "https://*/*"]) {
-    if (!manifest.host_permissions?.includes(hostPermission)) {
-      errors.push(`manifest.json is missing required host permission: ${hostPermission}`);
+    if (manifest.host_permissions?.includes(hostPermission)) {
+      errors.push(`manifest.json should not request broad install-time host permission: ${hostPermission}`);
+    }
+
+    if (!manifest.optional_host_permissions?.includes(hostPermission)) {
+      errors.push(`manifest.json is missing optional host permission: ${hostPermission}`);
     }
   }
 }

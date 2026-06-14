@@ -120,6 +120,82 @@
     });
   }
 
+  function storageGet(keys) {
+    return new Promise((resolve, reject) => {
+      if (!chrome.storage || !chrome.storage.local) {
+        resolve({});
+        return;
+      }
+
+      chrome.storage.local.get(keys, (items) => {
+        const errorMessage = getRuntimeErrorMessage();
+        if (errorMessage) {
+          reject(new Error(errorMessage));
+          return;
+        }
+
+        resolve(items || {});
+      });
+    });
+  }
+
+  function storageSet(items) {
+    return new Promise((resolve, reject) => {
+      if (!chrome.storage || !chrome.storage.local) {
+        resolve();
+        return;
+      }
+
+      chrome.storage.local.set(items, () => {
+        const errorMessage = getRuntimeErrorMessage();
+        if (errorMessage) {
+          reject(new Error(errorMessage));
+          return;
+        }
+
+        resolve();
+      });
+    });
+  }
+
+  function permissionsContains(permissions) {
+    return new Promise((resolve, reject) => {
+      if (!chrome.permissions || typeof chrome.permissions.contains !== "function") {
+        resolve(false);
+        return;
+      }
+
+      chrome.permissions.contains(permissions, (result) => {
+        const errorMessage = getRuntimeErrorMessage();
+        if (errorMessage) {
+          reject(new Error(errorMessage));
+          return;
+        }
+
+        resolve(Boolean(result));
+      });
+    });
+  }
+
+  function permissionsRequest(permissions) {
+    return new Promise((resolve, reject) => {
+      if (!chrome.permissions || typeof chrome.permissions.request !== "function") {
+        resolve(false);
+        return;
+      }
+
+      chrome.permissions.request(permissions, (granted) => {
+        const errorMessage = getRuntimeErrorMessage();
+        if (errorMessage) {
+          reject(new Error(errorMessage));
+          return;
+        }
+
+        resolve(Boolean(granted));
+      });
+    });
+  }
+
   root.TabPackBrowserApi = Object.freeze({
     createTab,
     queryTabs,
@@ -129,6 +205,10 @@
     executeLegacyTabScript,
     sendRuntimeMessage,
     saveAsMHTML,
+    storageGet,
+    storageSet,
+    permissionsContains,
+    permissionsRequest,
     getRuntimeErrorMessage
   });
 })(globalThis);

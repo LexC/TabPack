@@ -10,9 +10,9 @@ Save Tab Groups as Local Files
 
 ## Description
 
-TabPack saves grouped tabs from the current Microsoft Edge window into local files on your device. Each tab group becomes a folder, and each supported HTTP or HTTPS tab is exported in the same left-to-right order shown in the tab strip.
+TabPack saves grouped tabs from the current Microsoft Edge window into local files on your device. Each tab group becomes a folder, and supported HTTP or HTTPS tabs are selected by default in the same left-to-right order shown in the tab strip. You can deselect groups or tabs before export.
 
-Supported export modes include HTML snapshots, HTML plus local asset folders, MHTML archives, and CSV indexes.
+Supported export modes include HTML snapshots, HTML plus local asset folders, MHTML archives, and CSV audit indexes.
 
 TabPack is local-only. It does not upload files, use analytics, require login, or send telemetry.
 
@@ -22,6 +22,6 @@ Productivity, Developer Tools, Accessibility
 
 ## Privacy Notes
 
-TabPack needs tab, tab group, scripting, page capture, downloads, and HTTP/HTTPS host permissions to inspect grouped tabs, serialize open pages, capture MHTML, and write export files.
+TabPack needs tab, tab group, scripting, page capture, downloads, and storage permissions to inspect grouped tabs, serialize open pages, capture MHTML, remember settings, and write export files. HTTP/HTTPS host access is requested at runtime for HTML export modes.
 
 Exports stay on the user's device.
