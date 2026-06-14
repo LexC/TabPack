@@ -8,13 +8,15 @@
     "tabGroups",
     "pageCapture",
     "downloads",
-    "scripting",
-    "debugger"
+    "scripting"
   ],
   "host_permissions": [
     "http://*/*",
     "https://*/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_title": "TabGroupVault",
     "default_popup": "popup.html"

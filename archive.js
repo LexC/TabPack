@@ -13,6 +13,7 @@ const HTML_ASSET_NONE = "none";
 const HTML_ASSET_RELEVANT = "relevant";
 const HTML_ASSET_ALL = "all";
 const CSV_FILE_NAME = "tab-groups.csv";
+const RUN_SERIALIZER_IN_TAB_MESSAGE = "TabGroupVault.runSerializerInTab";
 const NO_GROUP_ID = chrome.tabGroups && typeof chrome.tabGroups.TAB_GROUP_ID_NONE === "number"
   ? chrome.tabGroups.TAB_GROUP_ID_NONE
   : -1;
@@ -1055,12 +1056,12 @@ function executeSerializerInTab(tabId, options) {
     return executeSerializerWithLegacyTabsApi(tabId, options);
   }
 
-  if (chrome.debugger && typeof chrome.debugger.attach === "function") {
-    return executeSerializerWithDebuggerApi(tabId, options);
+  if (chrome.runtime && typeof chrome.runtime.sendMessage === "function") {
+    return executeSerializerWithBackground(tabId, options);
   }
 
   return Promise.reject(new Error(
-    "HTML export requires a tab script execution API. Reload TabGroupVault at edge://extensions after updating the extension, approve any new permissions, then reopen TabGroupVault."
+    "HTML export requires the scripting API or the background serializer. Reload TabGroupVault at edge://extensions after updating the extension, then reopen TabGroupVault."
   ));
 }
 
@@ -1133,96 +1134,43 @@ function executeSerializerWithLegacyTabsApi(tabId, options) {
   });
 }
 
-async function executeSerializerWithDebuggerApi(tabId, options) {
-  const target = {
-    tabId
-  };
-  const expression = `(${serializeCompleteHtmlInPage.toString()})(${JSON.stringify(options)})`;
-
-  await attachDebugger(target);
-
-  try {
-    await sendDebuggerCommand(target, "Runtime.enable", {});
-    const response = await sendDebuggerCommand(target, "Runtime.evaluate", {
-      expression,
-      awaitPromise: true,
-      returnByValue: true
-    });
-
-    if (response && response.exceptionDetails) {
-      throw new Error(formatDebuggerException(response.exceptionDetails));
-    }
-
-    if (!response || !response.result) {
-      throw new Error("Debugger evaluation returned no result.");
-    }
-
-    if (response.result.subtype === "error") {
-      throw new Error(response.result.description || "Debugger evaluation failed.");
-    }
-
-    return response.result.value || null;
-  } finally {
-    try {
-      await detachDebugger(target);
-    } catch (_error) {
-      // Edge may already detach after navigation or a failed evaluation.
-    }
-  }
-}
-
-function attachDebugger(target) {
+function executeSerializerWithBackground(tabId, options) {
   return new Promise((resolve, reject) => {
-    chrome.debugger.attach(target, "1.3", () => {
+    chrome.runtime.sendMessage({
+      type: RUN_SERIALIZER_IN_TAB_MESSAGE,
+      tabId,
+      options
+    }, (response) => {
       const error = chrome.runtime.lastError;
       if (error) {
-        reject(new Error(`Debugger attach failed: ${error.message}`));
+        reject(new Error(formatBackgroundSerializerError(error.message)));
         return;
       }
 
-      resolve();
+      if (!response) {
+        reject(new Error("The background serializer returned no response."));
+        return;
+      }
+
+      if (!response.ok) {
+        reject(new Error(response.error || "The background serializer failed."));
+        return;
+      }
+
+      resolve(response.result || null);
     });
   });
 }
 
-function detachDebugger(target) {
-  return new Promise((resolve, reject) => {
-    chrome.debugger.detach(target, () => {
-      const error = chrome.runtime.lastError;
-      if (error) {
-        reject(new Error(error.message));
-        return;
-      }
-
-      resolve();
-    });
-  });
-}
-
-function sendDebuggerCommand(target, method, params) {
-  return new Promise((resolve, reject) => {
-    chrome.debugger.sendCommand(target, method, params, (response) => {
-      const error = chrome.runtime.lastError;
-      if (error) {
-        reject(new Error(error.message));
-        return;
-      }
-
-      resolve(response);
-    });
-  });
-}
-
-function formatDebuggerException(exceptionDetails) {
-  if (exceptionDetails.exception && exceptionDetails.exception.description) {
-    return exceptionDetails.exception.description;
+function formatBackgroundSerializerError(message) {
+  const details = String(message || "").trim();
+  if (/receiving end does not exist/i.test(details)) {
+    return "The background serializer is not available. Reload TabGroupVault at edge://extensions, then reopen TabGroupVault.";
   }
 
-  if (exceptionDetails.text) {
-    return exceptionDetails.text;
-  }
-
-  return "Debugger evaluation failed.";
+  return details
+    ? `The background serializer failed: ${details}`
+    : "The background serializer failed.";
 }
 
 function serializeCompleteHtmlInPage(options) {

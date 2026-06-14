@@ -133,9 +133,9 @@ By default, existing files are not overwritten. In HTML asset modes, conflicts a
 
 ## Permissions
 
-TabGroupVault requests `tabs`, `tabGroups`, `pageCapture`, `downloads`, `scripting`, and `debugger`. It also requests `http://*/*` and `https://*/*` host permissions so it can serialize open HTTP/HTTPS pages and fetch referenced assets for HTML asset modes.
+TabGroupVault requests `tabs`, `tabGroups`, `pageCapture`, `downloads`, and `scripting`. It also requests `http://*/*` and `https://*/*` host permissions so it can serialize open HTTP/HTTPS pages and fetch referenced assets for HTML asset modes.
 
-HTML export first tries the standard `scripting` API. If that API is not exposed by the loaded Edge extension page, TabGroupVault falls back to the debugger API to evaluate the same serializer in the tab. Edge may show a temporary debugging notice during that fallback.
+HTML export uses the standard `scripting` API when Edge exposes it to the archive page. If that API is unavailable there, TabGroupVault asks its background service worker to run the same serializer in each exported HTTP/HTTPS tab.
 
 ## Known Limitations
 
@@ -155,5 +155,6 @@ HTML export first tries the standard `scripting` API. If that API is not exposed
 - If write permission is denied, choose the folder again or select another folder.
 - If selected-folder export is unavailable, use the clearly labeled Downloads fallback.
 - If an HTML asset mode reports asset warnings, inspect the exported `N_files/` folder and retry with MHTML mode for a single-file archive.
+- If HTML export says the background serializer is unavailable, reload the unpacked extension at `edge://extensions`, approve any new permissions, and reopen TabGroupVault.
 - If HTML export says a script execution API is unavailable, reload the unpacked extension at `edge://extensions`, approve any new permissions, and reopen TabGroupVault.
 - If MHTML capture fails for some pages, retry with an HTML mode or export a CSV index.
