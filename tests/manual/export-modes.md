@@ -6,6 +6,7 @@
 - [ ] Export selected grouped tabs to a custom folder.
 - [ ] Confirm each selected tab writes only `N.html`.
 - [ ] Confirm deselected tabs do not write files.
+- [ ] Confirm `tab-groups.csv` and `tabpack-export-report.json` are written at the export root.
 
 ## HTML Relevant Assets
 
@@ -13,6 +14,7 @@
 - [ ] Export pages with scripts, stylesheets, images, and icons.
 - [ ] Confirm selected tabs write `N.html` plus matching `N_files/`.
 - [ ] Confirm stylesheet-internal `url(...)` and `@import` references may remain online URLs.
+- [ ] Confirm `tab-groups.csv` contains only selected page rows.
 
 ## HTML All Assets
 
@@ -26,14 +28,16 @@
 - [ ] Export a simple public webpage.
 - [ ] Open the `.mhtml` file in Edge.
 - [ ] Retry with a complex page and confirm capture failures increment Failed while later tabs continue.
+- [ ] Confirm the JSON report includes page results and any failure details.
 
-## CSV Audit
+## CSV Index And Report
 
 - [ ] Select CSV page index.
 - [ ] Deselect at least one eligible tab.
-- [ ] Export `tab-groups.csv`.
-- [ ] Confirm rows include `selected`, `deselected`, and `skipped` statuses.
-- [ ] Confirm the header exactly matches the README CSV column list.
+- [ ] Export `tab-groups.csv` and `tabpack-export-report.json`.
+- [ ] Confirm `tab-groups.csv` includes selected pages only.
+- [ ] Confirm `tab-groups.csv` does not include `selected_for_export`, `skip_reason`, or `group_folder`.
+- [ ] Confirm the JSON report includes selected, deselected, and skipped tab sections.
 
 ## Notes
 

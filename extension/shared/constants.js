@@ -16,6 +16,7 @@
     HTML_ASSET_RELEVANT: "relevant",
     HTML_ASSET_ALL: "all",
     CSV_FILE_NAME: "tab-groups.csv",
+    EXPORT_REPORT_FILE_NAME: "tabpack-export-report.json",
     RUN_SERIALIZER_IN_TAB_MESSAGE: "TabPack.runSerializerInTab"
   });
 })(globalThis);

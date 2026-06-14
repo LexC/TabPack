@@ -14,6 +14,7 @@ It is built for people who use tab groups as working sets: research sessions, pr
 - Preserves browser tab-group order and tab order in deterministic numbered files.
 - Lets you deselect specific groups or tabs before export; everything eligible is selected by default.
 - Supports HTML, HTML + `_files` folders, MHTML, and CSV exports.
+- Writes a selected-page CSV index and a JSON export report with every export mode.
 - Writes to a folder you choose with the File System Access API when available.
 - Remembers export settings and best-effort output folder access when the browser keeps permission.
 - Provides an explicit `Downloads/TabPack/` fallback when selected-folder export is unavailable.
@@ -36,7 +37,7 @@ Selected output folder/
       1_files/
 ```
 
-MHTML mode uses the same group folders with `.mhtml` files. CSV mode writes one `tab-groups.csv` file at the export root.
+MHTML mode uses the same group folders with `.mhtml` files. Every mode writes `tab-groups.csv` and `tabpack-export-report.json` at the export root.
 
 ## Install
 
@@ -70,7 +71,9 @@ During a long export, click **Stop export** to stop before the next queued page 
 | HTML page + relevant assets | `1.html` + `1_files/` | The default mode. Saves direct page resources such as scripts, stylesheets, images, icons, media, frames, and `srcset` entries. |
 | HTML page + all assets | `1.html` + `1_files/` | A deeper archive that also follows stylesheet `url(...)` and `@import` references recursively. May save many files on large sites. |
 | MHTML page archives | `1.mhtml` | Single-file page archives using Chromium's official `chrome.pageCapture.saveAsMHTML` API. |
-| CSV page index | `tab-groups.csv` | An audit index of selected, deselected, and skipped tabs without saving page content. |
+| CSV page index | `tab-groups.csv` + `tabpack-export-report.json` | A selected-page index plus a full JSON export report without saving page content. |
+
+Every export mode writes `tab-groups.csv` and `tabpack-export-report.json` at the export root. The CSV contains only selected page rows. The JSON report includes export settings, generated files, selected pages, deselected pages, skipped tabs, page results, failures, and asset warnings.
 
 In the relevant-assets mode, stylesheet-internal `url(...)` and `@import` references are kept as absolute web URLs instead of being followed recursively. The all-assets mode follows those references and can therefore save many more files.
 
@@ -85,7 +88,7 @@ HTML snapshot modes are best-effort because Chromium does not expose the browser
 - `edge://`, `chrome://`, extension pages, `file://`, `about:blank`, and other unsupported URLs are skipped.
 - Collapsed tab groups are included when their tabs exist in the current window.
 
-CSV exports include export timestamp, row status, selected state, skip reason, export mode, group order, group ID, group name, group folder, tab order, selected order, tab index, tab ID, cleaned page title, page URL, planned file path, and planned asset folder path.
+CSV exports include export timestamp, export mode, group order, group name, group ID, selected order, tab order, tab index, tab ID, cleaned page title, page URL, file path, and asset folder path.
 
 ## Destination Folders
 
@@ -132,10 +135,17 @@ MHTML mode writes:
 3.mhtml
 ```
 
-CSV mode writes one audit file:
+CSV mode writes the selected-page index instead of page content:
 
 ```text
 tab-groups.csv
+```
+
+Every mode also writes root-level export metadata:
+
+```text
+tab-groups.csv
+tabpack-export-report.json
 ```
 
 Page titles are not used in filenames. By default, existing files are not overwritten. If `1.html` or `1_files/` already exists, TabPack writes `1 (1).html` and `1 (1)_files/`. An overwrite mode is available in the export screen, but it is not the default.
@@ -183,7 +193,7 @@ HTML export uses the standard `scripting` API when the browser exposes it to the
 ## Troubleshooting
 
 - If **Export grouped tabs** is disabled, scan grouped tabs and choose an output folder first.
-- If every tab is deselected, select at least one tab or use CSV mode to write an audit index.
+- If every tab is deselected, select at least one tab before exporting.
 - If folder selection is canceled, click **Choose output folder** again.
 - If write permission is denied, choose the folder again or select another folder.
 - If selected-folder export is unavailable, use the clearly labeled Downloads fallback.

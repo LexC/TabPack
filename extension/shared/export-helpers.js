@@ -11,6 +11,7 @@
   const CSV_MODE = constants.CSV_MODE || "csv";
   const MHTML_MODE = constants.MHTML_MODE || "mhtml";
   const CSV_FILE_NAME = constants.CSV_FILE_NAME || "tab-groups.csv";
+  const EXPORT_REPORT_FILE_NAME = constants.EXPORT_REPORT_FILE_NAME || "tabpack-export-report.json";
   const OPTIONAL_HOST_ORIGINS = ["http://*/*", "https://*/*"];
 
   function collectTabGroupIds(tabs, options = {}) {
@@ -117,7 +118,9 @@
       totalSelectedTabs: 0,
       totalDeselectedTabs: 0,
       csvFileName: CSV_FILE_NAME,
-      csvRelativePath: ""
+      csvRelativePath: "",
+      exportReportFileName: EXPORT_REPORT_FILE_NAME,
+      exportReportRelativePath: ""
     };
 
     applyModeAndPaths(plan, options);
@@ -170,9 +173,9 @@
 
     plan.mode = mode;
     plan.csvFileName = CSV_FILE_NAME;
-    plan.csvRelativePath = mode === CSV_MODE
-      ? buildRootRelativePath(CSV_FILE_NAME, { rootFolderName, createRootFolder, downloadsFallback })
-      : "";
+    plan.csvRelativePath = buildRootRelativePath(CSV_FILE_NAME, { rootFolderName, createRootFolder, downloadsFallback });
+    plan.exportReportFileName = EXPORT_REPORT_FILE_NAME;
+    plan.exportReportRelativePath = buildRootRelativePath(EXPORT_REPORT_FILE_NAME, { rootFolderName, createRootFolder, downloadsFallback });
 
     let selectedTotal = 0;
     let eligibleTotal = 0;
@@ -248,73 +251,156 @@
 
   function generateCsvIndex(plan, options = {}) {
     const exportedAt = options.exportedAt || new Date().toISOString();
+    const pageResults = new Map((options.pageResults || []).map((result) => {
+      return [result.selectionKey, result];
+    }));
     const rows = [[
       "exported_at",
-      "row_status",
-      "selected_for_export",
-      "skip_reason",
       "export_mode",
       "group_order",
-      "group_id",
       "group_name",
-      "group_folder",
-      "tab_order_in_group",
+      "group_id",
       "selected_order_in_group",
+      "tab_order_in_group",
       "tab_index",
       "tab_id",
       "page_title",
       "page_url",
-      "planned_file_path",
-      "planned_asset_folder_path"
+      "file_path",
+      "asset_folder_path"
     ]];
 
     for (const [groupIndex, group] of (plan.groups || []).entries()) {
       for (const file of group.files) {
+        if (!file.selected) {
+          continue;
+        }
+
+        const pageResult = pageResults.get(file.selectionKey) || {};
         rows.push([
           exportedAt,
-          file.selected ? "selected" : "deselected",
-          file.selected ? "true" : "false",
-          "",
           plan.mode,
           String(groupIndex + 1),
-          String(group.groupId),
           group.originalTitle,
-          group.sanitizedFolderName,
+          String(group.groupId),
+          String(file.selectedOrderInGroup),
           String(file.order),
-          file.selected ? String(file.selectedOrderInGroup) : "",
           String(file.tabIndex),
           String(file.tabId),
           cleanCsvPageTitle(file.title),
           file.url,
-          file.plannedRelativePath,
-          file.plannedAssetFolderPath
+          pageResult.finalRelativePath || pageResult.requestedRelativePath || file.plannedRelativePath,
+          pageResult.finalAssetFolderPath || file.plannedAssetFolderPath || file.plannedReferenceAssetFolderPath
         ]);
       }
     }
 
-    for (const skippedTab of plan.skippedTabs || []) {
-      rows.push([
-        exportedAt,
-        "skipped",
-        "false",
-        skippedTab.reason || "",
-        plan.mode,
-        "",
-        skippedTab.groupId === null || typeof skippedTab.groupId === "undefined" ? "" : String(skippedTab.groupId),
-        skippedTab.groupName || "",
-        skippedTab.groupFolder || "",
-        "",
-        "",
-        skippedTab.tabIndex === null || typeof skippedTab.tabIndex === "undefined" ? "" : String(skippedTab.tabIndex),
-        skippedTab.tabId === null || typeof skippedTab.tabId === "undefined" ? "" : String(skippedTab.tabId),
-        cleanCsvPageTitle(skippedTab.title),
-        skippedTab.url || "",
-        "",
-        ""
-      ]);
+    return rows.map((row) => row.map(formatCsvCell).join(",")).join("\r\n") + "\r\n";
+  }
+
+  function getSelectedCsvRowCount(plan) {
+    return (plan.groups || []).reduce((total, group) => {
+      return total + group.files.filter((file) => file.selected).length;
+    }, 0);
+  }
+
+  function generateExportReport(plan, options = {}) {
+    const exportedAt = options.exportedAt || new Date().toISOString();
+    const pageResults = new Map((options.pageResults || []).map((result) => {
+      return [result.selectionKey, result];
+    }));
+    const generatedFiles = Array.isArray(options.generatedFiles) ? options.generatedFiles : [];
+    const destination = options.destination || {};
+    const extensionVersion = options.extensionVersion || "";
+
+    return {
+      schemaVersion: 1,
+      application: {
+        name: "TabPack",
+        version: extensionVersion
+      },
+      exportedAt,
+      exportMode: plan.mode,
+      destination: {
+        type: destination.type || "",
+        label: destination.label || "",
+        rootFolderCreated: Boolean(destination.rootFolderCreated),
+        conflictBehavior: destination.conflictBehavior || "",
+        reportRelativePath: destination.reportRelativePath || ""
+      },
+      generatedFiles,
+      totals: {
+        eligibleTabs: plan.totalEligibleTabs || 0,
+        selectedTabs: plan.totalSelectedTabs || 0,
+        deselectedTabs: plan.totalDeselectedTabs || 0,
+        skippedTabs: (plan.skippedTabs || []).length,
+        successfulItems: options.successCount || 0,
+        failedItems: options.failureCount || 0,
+        assetWarnings: options.assetWarnings || 0
+      },
+      selectedPages: buildReportPages(plan, pageResults, true),
+      deselectedPages: buildReportPages(plan, pageResults, false),
+      skippedTabs: buildReportSkippedTabs(plan.skippedTabs || [])
+    };
+  }
+
+  function buildReportPages(plan, pageResults, selected) {
+    const pages = [];
+
+    for (const [groupIndex, group] of (plan.groups || []).entries()) {
+      for (const file of group.files) {
+        if (Boolean(file.selected) !== selected) {
+          continue;
+        }
+
+        const pageResult = pageResults.get(file.selectionKey) || {};
+        pages.push({
+          groupOrder: groupIndex + 1,
+          groupId: group.groupId,
+          groupName: group.originalTitle,
+          groupFolder: group.sanitizedFolderName,
+          tabOrderInGroup: file.order,
+          selectedOrderInGroup: file.selected ? file.selectedOrderInGroup : "",
+          tabIndex: file.tabIndex,
+          tabId: file.tabId,
+          pageTitle: file.title,
+          pageUrl: file.url,
+          plannedFilePath: file.plannedRelativePath,
+          plannedAssetFolderPath: file.plannedAssetFolderPath || file.plannedReferenceAssetFolderPath,
+          result: {
+            status: pageResult.status || getDefaultReportPageStatus(plan, file),
+            requestedFilePath: pageResult.requestedRelativePath || "",
+            finalFilePath: pageResult.finalRelativePath || "",
+            finalAssetFolderPath: pageResult.finalAssetFolderPath || "",
+            assetWarnings: pageResult.assetWarnings || 0,
+            error: pageResult.error || ""
+          }
+        });
+      }
     }
 
-    return rows.map((row) => row.map(formatCsvCell).join(",")).join("\r\n") + "\r\n";
+    return pages;
+  }
+
+  function getDefaultReportPageStatus(plan, file) {
+    if (!file.selected) {
+      return "deselected";
+    }
+
+    return plan.mode === CSV_MODE ? "indexed" : "not_started";
+  }
+
+  function buildReportSkippedTabs(skippedTabs) {
+    return skippedTabs.map((skippedTab) => ({
+      reason: skippedTab.reason || "",
+      groupId: skippedTab.groupId,
+      groupName: skippedTab.groupName || "",
+      groupFolder: skippedTab.groupFolder || "",
+      tabIndex: skippedTab.tabIndex,
+      tabId: skippedTab.tabId,
+      pageTitle: skippedTab.title || "",
+      pageUrl: skippedTab.url || ""
+    }));
   }
 
   function formatCsvCell(value) {
@@ -505,6 +591,8 @@
     buildPlannedRelativePath,
     buildRootRelativePath,
     generateCsvIndex,
+    getSelectedCsvRowCount,
+    generateExportReport,
     formatCsvCell,
     cleanCsvPageTitle,
     summarizeTabs,

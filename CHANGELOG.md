@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Write `tab-groups.csv` and `tabpack-export-report.json` for every export mode.
+- Change `tab-groups.csv` to include selected pages only with a simplified column order.
+- Move deselected, skipped, result, and warning details into the JSON export report.
+
 ## 1.1.0
 
 - Remember export settings and best-effort selected output folder access.

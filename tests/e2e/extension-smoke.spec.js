@@ -89,13 +89,18 @@ test("loads extension, summarizes popup, scans, selects, and previews CSV rows",
     await expect(selectedPreview.getByText("TabPack/E2E Group/1.html")).toBeVisible();
     const selectedPreviewText = await selectedPreview.textContent();
     expect(selectedPreviewText.indexOf("Title:")).toBeLessThan(selectedPreviewText.indexOf("File:"));
+    await expect(exportPage.getByText("Export index and report")).toBeVisible();
+    await expect(exportPage.getByText("CSV rows:")).toBeVisible();
+    await expect(exportPage.getByText("1 selected page row(s)")).toBeVisible();
+    await expect(exportPage.getByText("tabpack-export-report.json")).toBeVisible();
 
     await exportPage.getByLabel("CSV page index (.csv)").check();
     await expect(exportPage.getByText("CSV file:")).toBeVisible();
     await expect(exportPage.getByText("tab-groups.csv")).toBeVisible();
-    await expect(exportPage.getByText("CSV status:").first()).toBeVisible();
-    await expect(exportPage.getByText("selected_for_export=false")).toBeVisible();
-    await expect(exportPage.getByText("selected_for_export=true")).toBeVisible();
+    await expect(exportPage.getByText("CSV row:")).toBeVisible();
+    await expect(exportPage.getByText("Included")).toBeVisible();
+    await expect(exportPage.getByText("selected_for_export=false")).toHaveCount(0);
+    await expect(exportPage.getByText("selected_for_export=true")).toHaveCount(0);
   } finally {
     await context.close();
   }

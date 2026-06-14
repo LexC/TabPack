@@ -63,24 +63,78 @@ test("deselected tabs are compactly renumbered within each group", () => {
   assert.equal(plan.groups[0].files[1].plannedRelativePath, "Research/1.mhtml");
 });
 
-test("audit CSV includes selected, deselected, and skipped rows", () => {
+test("CSV index includes only selected rows in a readable order", () => {
   const selectedKeys = new Set([helpers.makeSelectionKey(10, 2)]);
   const plan = helpers.buildExportPlanFromTabs(sampleTabs(), sampleGroups(), {
     noGroupId: -1,
-    mode: constants.CSV_MODE,
+    mode: constants.MHTML_MODE,
     selectedKeys
   });
   const csv = helpers.generateCsvIndex(plan, {
-    exportedAt: "2026-06-14T00:00:00.000Z"
+    exportedAt: "2026-06-14T00:00:00.000Z",
+    pageResults: [
+      {
+        selectionKey: helpers.makeSelectionKey(10, 2),
+        finalRelativePath: "TabPack/Research/1.mhtml"
+      }
+    ]
   });
   const lines = csv.trim().split("\r\n");
 
-  assert.equal(lines.length, 6);
-  assert.equal(lines[0], "\"exported_at\",\"row_status\",\"selected_for_export\",\"skip_reason\",\"export_mode\",\"group_order\",\"group_id\",\"group_name\",\"group_folder\",\"tab_order_in_group\",\"selected_order_in_group\",\"tab_index\",\"tab_id\",\"page_title\",\"page_url\",\"planned_file_path\",\"planned_asset_folder_path\"");
-  assert.match(csv, /"selected","true"/);
-  assert.match(csv, /"deselected","false"/);
-  assert.match(csv, /"skipped","false","ungrouped"/);
-  assert.match(csv, /"skipped","false","unsupported URL"/);
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0], "\"exported_at\",\"export_mode\",\"group_order\",\"group_name\",\"group_id\",\"selected_order_in_group\",\"tab_order_in_group\",\"tab_index\",\"tab_id\",\"page_title\",\"page_url\",\"file_path\",\"asset_folder_path\"");
+  assert.match(lines[1], /"2026-06-14T00:00:00.000Z","mhtml","1","Research","10","1","2","1","2","Beta","https:\/\/example.com\/b","TabPack\/Research\/1.mhtml",""/);
+  assert.doesNotMatch(csv, /selected_for_export|skip_reason|group_folder|deselected|ungrouped|unsupported URL/);
+  assert.equal(helpers.getSelectedCsvRowCount(plan), 1);
+});
+
+test("export report includes selected, deselected, skipped, and generated file details", () => {
+  const selectedKeys = new Set([helpers.makeSelectionKey(10, 2)]);
+  const plan = helpers.buildExportPlanFromTabs(sampleTabs(), sampleGroups(), {
+    noGroupId: -1,
+    mode: constants.MHTML_MODE,
+    selectedKeys
+  });
+  const report = helpers.generateExportReport(plan, {
+    exportedAt: "2026-06-14T00:00:00.000Z",
+    extensionVersion: "1.1.0",
+    destination: {
+      type: "selected-folder",
+      label: "selected folder/TabPack/",
+      rootFolderCreated: true,
+      conflictBehavior: "uniquify",
+      reportRelativePath: "TabPack/tabpack-export-report.json"
+    },
+    pageResults: [
+      {
+        selectionKey: helpers.makeSelectionKey(10, 2),
+        status: "saved",
+        finalRelativePath: "TabPack/Research/1.mhtml"
+      }
+    ],
+    generatedFiles: [
+      {
+        kind: "csv_index",
+        status: "saved",
+        finalRelativePath: "TabPack/tab-groups.csv",
+        rowCount: 1
+      }
+    ],
+    successCount: 2,
+    failureCount: 0,
+    assetWarnings: 0
+  });
+
+  assert.equal(report.application.name, "TabPack");
+  assert.equal(report.application.version, "1.1.0");
+  assert.equal(report.totals.selectedTabs, 1);
+  assert.equal(report.totals.deselectedTabs, 2);
+  assert.equal(report.totals.skippedTabs, 2);
+  assert.equal(report.selectedPages.length, 1);
+  assert.equal(report.selectedPages[0].result.status, "saved");
+  assert.equal(report.deselectedPages.length, 2);
+  assert.equal(report.skippedTabs.length, 2);
+  assert.equal(report.generatedFiles[0].kind, "csv_index");
 });
 
 test("sanitizes reserved and invalid folder names", () => {

@@ -14,6 +14,7 @@ const {
   HTML_ASSET_RELEVANT,
   HTML_ASSET_ALL,
   CSV_FILE_NAME,
+  EXPORT_REPORT_FILE_NAME,
   RUN_SERIALIZER_IN_TAB_MESSAGE
 } = globalThis.TabPackConstants;
 
@@ -599,8 +600,8 @@ async function exportGroupedTabs() {
 
   applyModeAndPaths(state.exportPlan);
 
-  if (state.exportPlan.mode !== CSV_MODE && state.exportPlan.totalSelectedTabs === 0) {
-    logMessage("Select at least one grouped HTTP/HTTPS tab before exporting this mode.", "warning");
+  if (state.exportPlan.totalSelectedTabs === 0) {
+    logMessage("Select at least one grouped HTTP/HTTPS tab before exporting.", "warning");
     updateExportAvailability();
     return;
   }
@@ -626,12 +627,15 @@ async function exportGroupedTabs() {
   renderPreview();
 
   const result = {
+    exportedAt: new Date().toISOString(),
     success: 0,
     failure: 0,
     assetWarnings: 0,
     completedItems: 0,
-    totalItems: state.exportPlan.mode === CSV_MODE ? 1 : state.exportPlan.totalSelectedTabs,
-    progressUnit: state.exportPlan.mode === CSV_MODE ? "file" : "page"
+    totalItems: getExportProgressItemCount(state.exportPlan),
+    progressUnit: "item",
+    pageResults: [],
+    generatedFiles: []
   };
   resetExportProgress(result.totalItems, result.progressUnit);
 
@@ -652,15 +656,15 @@ async function exportGroupedTabs() {
       ? ` ${result.assetWarnings} asset warning(s).`
       : "";
     if (state.stopRequested) {
-      logMessage(`Export stopped by user. ${result.success} succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.${warningText}`, "warning");
+      logMessage(`Export stopped by user. ${result.success} item(s) succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.${warningText}`, "warning");
       finishExportProgress(result, "stopped");
     } else {
-      logMessage(`Export finished to ${destinationLabel}. ${result.success} succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.${warningText}`, result.failure > 0 ? "warning" : "success");
+      logMessage(`Export finished to ${destinationLabel}. ${result.success} item(s) succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.${warningText}`, result.failure > 0 ? "warning" : "success");
       finishExportProgress(result, result.failure > 0 ? "warning" : "done");
     }
   } catch (error) {
     if (isExportStopError(error)) {
-      logMessage(`Export stopped by user. ${result.success} succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.`, "warning");
+      logMessage(`Export stopped by user. ${result.success} item(s) succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.`, "warning");
       finishExportProgress(result, "stopped");
     } else {
       logMessage(`Export stopped before completion: ${getErrorMessage(error)}`, "error");
@@ -734,8 +738,7 @@ async function exportWithFileSystemAccess(plan, result) {
   const exportRootHandle = await getExportRootDirectory(state.selectedDirectoryHandle);
 
   if (plan.mode === CSV_MODE) {
-    throwIfExportStopped();
-    await exportCsvWithFileSystem(exportRootHandle, plan, result);
+    await exportReportFilesWithFileSystem(exportRootHandle, plan, result);
     return;
   }
 
@@ -756,6 +759,14 @@ async function exportWithFileSystemAccess(plan, result) {
       const message = `Could not create/open folder ${group.sanitizedFolderName}: ${getErrorMessage(error)}`;
       logMessage(message, "error");
       result.failure += group.selectedCount;
+      for (const file of group.files) {
+        if (file.selected) {
+          recordPageResult(result, group, file, {
+            status: "failed",
+            error: message
+          });
+        }
+      }
       setCounter(elements.failureCount, result.failure);
       markExportItemsComplete(result, group.selectedCount);
       continue;
@@ -774,6 +785,8 @@ async function exportWithFileSystemAccess(plan, result) {
       }
     }
   }
+
+  await exportReportFilesWithFileSystem(exportRootHandle, plan, result);
 }
 
 async function exportSingleFileWithFileSystem(groupDirectoryHandle, group, file, mode, result) {
@@ -783,8 +796,13 @@ async function exportSingleFileWithFileSystem(groupDirectoryHandle, group, file,
     throwIfExportStopped();
     const finalFileName = await resolveFileName(groupDirectoryHandle, file.fileName);
     await writeBlobToDirectory(groupDirectoryHandle, finalFileName, blob);
+    const finalRelativePath = buildPlannedRelativePath(group.sanitizedFolderName, finalFileName);
 
     result.success += 1;
+    recordPageResult(result, group, file, {
+      status: "saved",
+      finalRelativePath
+    });
     setCounter(elements.successCount, result.success);
     markExportItemsComplete(result);
     logMessage(`Saved ${group.sanitizedFolderName}/${finalFileName}.`, "success");
@@ -794,33 +812,103 @@ async function exportSingleFileWithFileSystem(groupDirectoryHandle, group, file,
     }
 
     result.failure += 1;
+    recordPageResult(result, group, file, {
+      status: "failed",
+      error: getErrorMessage(error)
+    });
     setCounter(elements.failureCount, result.failure);
     markExportItemsComplete(result);
     logMessage(`Failed ${group.sanitizedFolderName}/${file.fileName}: ${getErrorMessage(error)}`, "error");
   }
 }
 
-async function exportCsvWithFileSystem(exportRootHandle, plan, result) {
+async function exportReportFilesWithFileSystem(exportRootHandle, plan, result) {
+  await exportCsvIndexWithFileSystem(exportRootHandle, plan, result);
+  await exportJsonReportWithFileSystem(exportRootHandle, plan, result);
+}
+
+async function exportCsvIndexWithFileSystem(exportRootHandle, plan, result) {
   try {
     throwIfExportStopped();
-    const csvBlob = createCsvBlob(plan);
+    const csvBlob = createCsvBlob(plan, result);
     throwIfExportStopped();
     const finalFileName = await resolveFileName(exportRootHandle, CSV_FILE_NAME);
     await writeBlobToDirectory(exportRootHandle, finalFileName, csvBlob);
+    const finalRelativePath = buildRootRelativePath(finalFileName);
 
     result.success += 1;
+    recordGeneratedFile(result, "csv_index", {
+      status: "saved",
+      fileName: finalFileName,
+      plannedRelativePath: plan.csvRelativePath,
+      finalRelativePath,
+      rowCount: getCsvSelectedRowCount(plan)
+    });
     setCounter(elements.successCount, result.success);
     markExportItemsComplete(result);
-    logMessage(`Saved ${finalFileName} with ${getCsvAuditRowCount(plan)} audit row(s).`, "success");
+    logMessage(`Saved ${finalFileName} with ${getCsvSelectedRowCount(plan)} selected page row(s).`, "success");
   } catch (error) {
     if (isExportStopError(error)) {
       throw error;
     }
 
     result.failure += 1;
+    recordGeneratedFile(result, "csv_index", {
+      status: "failed",
+      fileName: CSV_FILE_NAME,
+      plannedRelativePath: plan.csvRelativePath,
+      error: getErrorMessage(error),
+      rowCount: getCsvSelectedRowCount(plan)
+    });
     setCounter(elements.failureCount, result.failure);
     markExportItemsComplete(result);
-    logMessage(`Failed CSV export: ${getErrorMessage(error)}`, "error");
+    logMessage(`Failed selected-page CSV index: ${getErrorMessage(error)}`, "error");
+  }
+}
+
+async function exportJsonReportWithFileSystem(exportRootHandle, plan, result) {
+  try {
+    throwIfExportStopped();
+    const finalFileName = await resolveFileName(exportRootHandle, EXPORT_REPORT_FILE_NAME);
+    const finalRelativePath = buildRootRelativePath(finalFileName);
+    const reportBlob = createExportReportBlob(plan, result, {
+      reportRelativePath: finalRelativePath,
+      reportFile: {
+        kind: "export_report",
+        status: "saved",
+        fileName: finalFileName,
+        plannedRelativePath: plan.exportReportRelativePath,
+        finalRelativePath
+      }
+    });
+    throwIfExportStopped();
+    await writeBlobToDirectory(exportRootHandle, finalFileName, reportBlob);
+
+    result.success += 1;
+    recordGeneratedFile(result, "export_report", {
+      status: "saved",
+      fileName: finalFileName,
+      plannedRelativePath: plan.exportReportRelativePath,
+      finalRelativePath
+    });
+    setCounter(elements.successCount, result.success);
+    markExportItemsComplete(result);
+    logMessage(`Saved ${finalFileName} export report.`, "success");
+  } catch (error) {
+    if (isExportStopError(error)) {
+      throw error;
+    }
+
+    result.failure += 1;
+    recordGeneratedFile(result, "export_report", {
+      status: "failed",
+      fileName: EXPORT_REPORT_FILE_NAME,
+      plannedRelativePath: plan.exportReportRelativePath,
+      error: getErrorMessage(error)
+    });
+    setCounter(elements.failureCount, result.failure);
+    markExportItemsComplete(result);
+    logMessage(`Failed export report: ${getErrorMessage(error)}`, "error");
   }
 }
 
@@ -836,11 +924,19 @@ async function exportHtmlSnapshotWithFileSystem(groupDirectoryHandle, group, fil
       const htmlPackage = await createCompleteHtmlPackage(group, file, file.referenceAssetFolderName, mode);
       throwIfExportStopped();
       await writeBlobToDirectory(groupDirectoryHandle, finalFileName, htmlPackage.htmlBlob);
+      const finalRelativePath = buildPlannedRelativePath(group.sanitizedFolderName, finalFileName);
 
       result.success += 1;
+      recordPageResult(result, group, file, {
+        status: "saved",
+        finalRelativePath,
+        assetWarnings: htmlPackage.failures.length
+      });
+      result.assetWarnings += htmlPackage.failures.length;
       setCounter(elements.successCount, result.success);
       markExportItemsComplete(result);
       logMessage(`Saved ${group.sanitizedFolderName}/${finalFileName}.`, "success");
+      logAssetWarnings(htmlPackage.failures, [], group.sanitizedFolderName);
       return;
     }
 
@@ -850,9 +946,17 @@ async function exportHtmlSnapshotWithFileSystem(groupDirectoryHandle, group, fil
     throwIfExportStopped();
     const writeFailures = await writeCompleteHtmlPackage(groupDirectoryHandle, outputNames, htmlPackage);
     const warningCount = htmlPackage.failures.length + writeFailures.length;
+    const finalRelativePath = buildPlannedRelativePath(group.sanitizedFolderName, outputNames.fileName);
+    const finalAssetFolderPath = buildPlannedRelativePath(group.sanitizedFolderName, `${outputNames.assetFolderName}/`);
 
     result.success += 1;
     result.assetWarnings += warningCount;
+    recordPageResult(result, group, file, {
+      status: "saved",
+      finalRelativePath,
+      finalAssetFolderPath,
+      assetWarnings: warningCount
+    });
     setCounter(elements.successCount, result.success);
     markExportItemsComplete(result);
     logMessage(`Saved ${group.sanitizedFolderName}/${outputNames.fileName} and ${group.sanitizedFolderName}/${outputNames.assetFolderName}/.`, "success");
@@ -863,6 +967,10 @@ async function exportHtmlSnapshotWithFileSystem(groupDirectoryHandle, group, fil
     }
 
     result.failure += 1;
+    recordPageResult(result, group, file, {
+      status: "failed",
+      error: getErrorMessage(error)
+    });
     setCounter(elements.failureCount, result.failure);
     markExportItemsComplete(result);
     logMessage(`Failed ${modeLabel} export for ${group.sanitizedFolderName}/${file.fileName}: ${getErrorMessage(error)}`, "error");
@@ -1051,8 +1159,7 @@ async function writeBlobToDirectory(directoryHandle, fileName, blob) {
 async function exportWithDownloadsFallback(plan, result) {
   throwIfExportStopped();
   if (plan.mode === CSV_MODE) {
-    throwIfExportStopped();
-    await exportCsvWithDownloadsFallback(plan, result);
+    await exportReportFilesWithDownloadsFallback(plan, result);
     return;
   }
 
@@ -1075,6 +1182,8 @@ async function exportWithDownloadsFallback(plan, result) {
       }
     }
   }
+
+  await exportReportFilesWithDownloadsFallback(plan, result);
 }
 
 async function exportSingleFileWithDownloadsFallback(group, file, mode, result) {
@@ -1086,6 +1195,11 @@ async function exportSingleFileWithDownloadsFallback(group, file, mode, result) 
     await downloadBlob(blob, filename);
 
     result.success += 1;
+    recordPageResult(result, group, file, {
+      status: "queued",
+      requestedRelativePath: filename,
+      finalRelativePath: filename
+    });
     setCounter(elements.successCount, result.success);
     markExportItemsComplete(result);
     logMessage(`Queued fallback download ${filename}.`, "success");
@@ -1095,33 +1209,108 @@ async function exportSingleFileWithDownloadsFallback(group, file, mode, result) 
     }
 
     result.failure += 1;
+    recordPageResult(result, group, file, {
+      status: "failed",
+      requestedRelativePath: `${ROOT_FOLDER_NAME}/${group.sanitizedFolderName}/${file.fileName}`,
+      error: getErrorMessage(error)
+    });
     setCounter(elements.failureCount, result.failure);
     markExportItemsComplete(result);
     logMessage(`Fallback failed ${group.sanitizedFolderName}/${file.fileName}: ${getErrorMessage(error)}`, "error");
   }
 }
 
-async function exportCsvWithDownloadsFallback(plan, result) {
+async function exportReportFilesWithDownloadsFallback(plan, result) {
+  await exportCsvIndexWithDownloadsFallback(plan, result);
+  await exportJsonReportWithDownloadsFallback(plan, result);
+}
+
+async function exportCsvIndexWithDownloadsFallback(plan, result) {
   try {
     throwIfExportStopped();
-    const csvBlob = createCsvBlob(plan);
+    const csvBlob = createCsvBlob(plan, result);
     throwIfExportStopped();
     const filename = `${ROOT_FOLDER_NAME}/${CSV_FILE_NAME}`;
     await downloadBlob(csvBlob, filename);
 
     result.success += 1;
+    recordGeneratedFile(result, "csv_index", {
+      status: "queued",
+      fileName: CSV_FILE_NAME,
+      plannedRelativePath: plan.csvRelativePath,
+      requestedRelativePath: filename,
+      finalRelativePath: filename,
+      rowCount: getCsvSelectedRowCount(plan)
+    });
     setCounter(elements.successCount, result.success);
     markExportItemsComplete(result);
-    logMessage(`Queued fallback download ${filename} with ${getCsvAuditRowCount(plan)} audit row(s).`, "success");
+    logMessage(`Queued fallback download ${filename} with ${getCsvSelectedRowCount(plan)} selected page row(s).`, "success");
   } catch (error) {
     if (isExportStopError(error)) {
       throw error;
     }
 
     result.failure += 1;
+    recordGeneratedFile(result, "csv_index", {
+      status: "failed",
+      fileName: CSV_FILE_NAME,
+      plannedRelativePath: plan.csvRelativePath,
+      requestedRelativePath: `${ROOT_FOLDER_NAME}/${CSV_FILE_NAME}`,
+      error: getErrorMessage(error),
+      rowCount: getCsvSelectedRowCount(plan)
+    });
     setCounter(elements.failureCount, result.failure);
     markExportItemsComplete(result);
-    logMessage(`Fallback CSV export failed: ${getErrorMessage(error)}`, "error");
+    logMessage(`Fallback selected-page CSV index failed: ${getErrorMessage(error)}`, "error");
+  }
+}
+
+async function exportJsonReportWithDownloadsFallback(plan, result) {
+  const filename = `${ROOT_FOLDER_NAME}/${EXPORT_REPORT_FILE_NAME}`;
+
+  try {
+    throwIfExportStopped();
+    const reportBlob = createExportReportBlob(plan, result, {
+      reportRelativePath: filename,
+      reportFile: {
+        kind: "export_report",
+        status: "queued",
+        fileName: EXPORT_REPORT_FILE_NAME,
+        plannedRelativePath: plan.exportReportRelativePath,
+        requestedRelativePath: filename,
+        finalRelativePath: filename
+      }
+    });
+    throwIfExportStopped();
+    await downloadBlob(reportBlob, filename);
+
+    result.success += 1;
+    recordGeneratedFile(result, "export_report", {
+      status: "queued",
+      fileName: EXPORT_REPORT_FILE_NAME,
+      plannedRelativePath: plan.exportReportRelativePath,
+      requestedRelativePath: filename,
+      finalRelativePath: filename
+    });
+    setCounter(elements.successCount, result.success);
+    markExportItemsComplete(result);
+    logMessage(`Queued fallback download ${filename} export report.`, "success");
+  } catch (error) {
+    if (isExportStopError(error)) {
+      throw error;
+    }
+
+    result.failure += 1;
+    recordGeneratedFile(result, "export_report", {
+      status: "failed",
+      fileName: EXPORT_REPORT_FILE_NAME,
+      plannedRelativePath: plan.exportReportRelativePath,
+      requestedRelativePath: filename,
+      error: getErrorMessage(error)
+    });
+    setCounter(elements.failureCount, result.failure);
+    markExportItemsComplete(result);
+    logMessage(`Fallback export report failed: ${getErrorMessage(error)}`, "error");
   }
 }
 
@@ -1162,6 +1351,15 @@ async function exportHtmlSnapshotWithDownloadsFallback(group, file, mode, result
 
     result.success += 1;
     result.assetWarnings += htmlPackage.failures.length;
+    recordPageResult(result, group, file, {
+      status: "queued",
+      requestedRelativePath: htmlFilename,
+      finalRelativePath: htmlFilename,
+      finalAssetFolderPath: usesAssetFolder
+        ? `${ROOT_FOLDER_NAME}/${group.sanitizedFolderName}/${file.assetFolderName}/`
+        : "",
+      assetWarnings: htmlPackage.failures.length
+    });
     setCounter(elements.successCount, result.success);
     markExportItemsComplete(result);
     if (usesAssetFolder) {
@@ -1176,6 +1374,11 @@ async function exportHtmlSnapshotWithDownloadsFallback(group, file, mode, result
     }
 
     result.failure += 1;
+    recordPageResult(result, group, file, {
+      status: "failed",
+      requestedRelativePath: `${ROOT_FOLDER_NAME}/${group.sanitizedFolderName}/${file.fileName}`,
+      error: getErrorMessage(error)
+    });
     setCounter(elements.failureCount, result.failure);
     markExportItemsComplete(result);
     logMessage(`Fallback ${modeLabel} failed ${group.sanitizedFolderName}/${file.fileName}: ${getErrorMessage(error)}`, "error");
@@ -1219,51 +1422,100 @@ async function createSingleFileBlob(mode, group, file) {
   throw new Error(`Unsupported single-file export mode: ${mode}`);
 }
 
-function createCsvBlob(plan) {
-  return new Blob([generateCsvIndex(plan)], {
+function createCsvBlob(plan, result) {
+  return new Blob([generateCsvIndex(plan, result)], {
     type: "text/csv;charset=utf-8"
   });
 }
 
-function generateCsvIndex(plan) {
-  return ExportHelpers.generateCsvIndex(plan);
+function generateCsvIndex(plan, result) {
+  return ExportHelpers.generateCsvIndex(plan, {
+    exportedAt: result && result.exportedAt,
+    pageResults: result && result.pageResults
+  });
 }
 
-function getCsvAuditRowCount(plan) {
-  return (plan.totalEligibleTabs || 0) + (plan.skippedTabs ? plan.skippedTabs.length : 0);
+function createExportReportBlob(plan, result, options = {}) {
+  const generatedFiles = options.reportFile
+    ? [...result.generatedFiles, options.reportFile]
+    : result.generatedFiles;
+  const reportSelfSuccess = options.reportFile && options.reportFile.status !== "failed" ? 1 : 0;
+  const report = ExportHelpers.generateExportReport(plan, {
+    exportedAt: result.exportedAt,
+    extensionVersion: getExtensionVersion(),
+    destination: getReportDestination(options),
+    pageResults: result.pageResults,
+    generatedFiles,
+    successCount: result.success + reportSelfSuccess,
+    failureCount: result.failure,
+    assetWarnings: result.assetWarnings
+  });
+
+  return new Blob([`${JSON.stringify(report, null, 2)}\n`], {
+    type: "application/json;charset=utf-8"
+  });
 }
 
-function formatCsvCell(value) {
-  const text = String(value ?? "");
-  return `"${text.replace(/"/g, '""')}"`;
+function getCsvSelectedRowCount(plan) {
+  return ExportHelpers.getSelectedCsvRowCount(plan);
 }
 
-function cleanCsvPageTitle(value) {
-  return normalizeBooleanTitleText(repairMojibake(String(value || "")))
-    .replace(/[\u201C\u201D\u201E\u201F]/g, "\"")
-    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
-    .replace(/[\x00-\x1F\x7F]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+function getExtensionVersion() {
+  try {
+    return chrome.runtime.getManifest().version || "";
+  } catch (_error) {
+    return "";
+  }
 }
 
-function repairMojibake(value) {
-  return String(value)
-    .replace(/\u00e2\u20ac\u0153/g, "\u201C")
-    .replace(/\u00e2\u20ac\u009d/g, "\u201D")
-    .replace(/\u00e2\u20ac\u2122/g, "\u2019")
-    .replace(/\u00e2\u20ac\u02dc/g, "\u2018")
-    .replace(/\u00e2\u20ac\u201c/g, "\u2013")
-    .replace(/\u00e2\u20ac\u201d/g, "\u2014")
-    .replace(/\u00e2\u20ac\u00a6/g, "\u2026")
-    .replace(/\u00c2\u00a0/g, " ");
+function getReportDestination(options = {}) {
+  const downloadsFallback = isDownloadsFallbackSelected();
+  return {
+    type: downloadsFallback ? "downloads-fallback" : "selected-folder",
+    label: downloadsFallback
+      ? `Downloads/${ROOT_FOLDER_NAME}/`
+      : elements.createRootFolder.checked
+        ? `selected folder/${ROOT_FOLDER_NAME}/`
+        : "selected folder/",
+    rootFolderCreated: downloadsFallback || elements.createRootFolder.checked,
+    conflictBehavior: elements.conflictBehavior.value,
+    reportRelativePath: options.reportRelativePath || ""
+  };
 }
 
-function normalizeBooleanTitleText(value) {
-  return String(value)
-    .replace(/\s*(\bAND\b|\bOR\b)\s*/g, " $1 ")
-    .replace(/\s+([),])/g, "$1")
-    .replace(/([(])\s+/g, "$1");
+function recordGeneratedFile(result, kind, details = {}) {
+  result.generatedFiles.push({
+    kind,
+    status: details.status || "",
+    fileName: details.fileName || "",
+    plannedRelativePath: details.plannedRelativePath || "",
+    requestedRelativePath: details.requestedRelativePath || "",
+    finalRelativePath: details.finalRelativePath || "",
+    rowCount: typeof details.rowCount === "number" ? details.rowCount : undefined,
+    error: details.error || ""
+  });
+}
+
+function recordPageResult(result, group, file, details = {}) {
+  result.pageResults.push({
+    selectionKey: file.selectionKey,
+    groupId: group.groupId,
+    tabId: file.tabId,
+    status: details.status || "",
+    plannedRelativePath: file.plannedRelativePath,
+    plannedAssetFolderPath: file.plannedAssetFolderPath || file.plannedReferenceAssetFolderPath,
+    requestedRelativePath: details.requestedRelativePath || "",
+    finalRelativePath: details.finalRelativePath || "",
+    finalAssetFolderPath: details.finalAssetFolderPath || "",
+    assetWarnings: details.assetWarnings || 0,
+    error: details.error || ""
+  });
+}
+
+function getExportProgressItemCount(plan) {
+  const reportFileCount = 2;
+  const pageCount = plan.mode === CSV_MODE ? 0 : plan.totalSelectedTabs;
+  return pageCount + reportFileCount;
 }
 
 async function createCompleteHtmlPackage(group, file, assetFolderName, mode) {
@@ -1897,24 +2149,24 @@ function renderPreview() {
       : "Base destination: selected folder/";
   fragment.append(destination);
 
-  if (state.exportPlan.mode === CSV_MODE) {
-    const csvBlock = document.createElement("div");
-    csvBlock.className = "group-preview";
+  const reportBlock = document.createElement("div");
+  reportBlock.className = "group-preview";
 
-    const heading = document.createElement("h3");
-    heading.textContent = "CSV page index";
-    csvBlock.append(heading);
+  const reportHeading = document.createElement("h3");
+  reportHeading.textContent = "Export index and report";
+  reportBlock.append(reportHeading);
 
-    const csvFields = document.createElement("div");
-    csvFields.className = "preview-fields";
-    appendPreviewField(csvFields, "CSV file", state.exportPlan.csvRelativePath, {
-      path: true
-    });
-    appendPreviewField(csvFields, "Rows", `${getCsvAuditRowCount(state.exportPlan)} audit rows: selected, deselected, and skipped tabs`);
-    csvBlock.append(csvFields);
-
-    fragment.append(csvBlock);
-  }
+  const reportFields = document.createElement("div");
+  reportFields.className = "preview-fields";
+  appendPreviewField(reportFields, "CSV file", state.exportPlan.csvRelativePath, {
+    path: true
+  });
+  appendPreviewField(reportFields, "CSV rows", `${getCsvSelectedRowCount(state.exportPlan)} selected page row(s)`);
+  appendPreviewField(reportFields, "Report file", state.exportPlan.exportReportRelativePath, {
+    path: true
+  });
+  reportBlock.append(reportFields);
+  fragment.append(reportBlock);
 
   for (const group of state.exportPlan.groups) {
     const groupBlock = document.createElement("div");
@@ -1981,8 +2233,8 @@ function renderPreview() {
       appendPreviewField(fields, "Title", file.title);
 
       if (state.exportPlan.mode === CSV_MODE) {
-        appendPreviewField(fields, "CSV status", file.selected ? "selected_for_export=true" : "selected_for_export=false");
         if (file.selected) {
+          appendPreviewField(fields, "CSV row", "Included");
           appendPreviewField(fields, "Selected order", String(file.selectedOrderInGroup));
         } else {
           appendPreviewField(fields, "Status", "Not selected", {
@@ -2147,10 +2399,7 @@ function clearSkippedTabs() {
 
 function updateExportAvailability() {
   const hasPlan = Boolean(state.exportPlan && state.exportPlan.totalEligibleTabs > 0);
-  const hasSelection = Boolean(state.exportPlan && (
-    state.exportPlan.mode === CSV_MODE ||
-    state.exportPlan.totalSelectedTabs > 0
-  ));
+  const hasSelection = Boolean(state.exportPlan && state.exportPlan.totalSelectedTabs > 0);
   const hasSelectedFolder = Boolean(state.selectedDirectoryHandle && state.selectedDirectoryWritable);
   const hasDestination = hasSelectedFolder || isDownloadsFallbackSelected();
   elements.exportButton.disabled = state.isExporting || !hasPlan || !hasSelection || !hasDestination;

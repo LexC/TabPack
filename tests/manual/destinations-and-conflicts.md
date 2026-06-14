@@ -5,8 +5,10 @@
 - [ ] Choose a writable folder outside Downloads.
 - [ ] Keep Create TabPack root folder enabled and export.
 - [ ] Confirm output appears under `Selected folder/TabPack/`.
+- [ ] Confirm `tab-groups.csv` and `tabpack-export-report.json` appear at the export root.
 - [ ] Disable Create TabPack root folder and export again.
 - [ ] Confirm group folders are written directly inside the selected folder.
+- [ ] Confirm `tab-groups.csv` and `tabpack-export-report.json` move with the selected export root.
 
 ## Remembered Folder
 
@@ -27,6 +29,7 @@
 - [ ] Simulate or use a browser context where `showDirectoryPicker` is unavailable or denied.
 - [ ] Confirm the Downloads fallback is clearly shown and must be explicitly checked.
 - [ ] Export and confirm files are written under `Downloads/TabPack/`.
+- [ ] Confirm the fallback also queues `Downloads/TabPack/tab-groups.csv` and `Downloads/TabPack/tabpack-export-report.json`.
 
 ## Notes
 
