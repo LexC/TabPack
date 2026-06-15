@@ -379,7 +379,7 @@ function makePromoHtml(width, height) {
             </div>
             <div class="file">
               <strong>Project Planning</strong>
-              <span>TabPack/tab-groups.csv</span>
+              <span>TabPack/Research/3.html</span>
             </div>
           </section>
         </main>
