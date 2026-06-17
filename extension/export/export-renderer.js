@@ -22,6 +22,7 @@
     const getCsvSelectedRowCount = context.getCsvSelectedRowCount;
     const isDownloadsFallbackSelected = context.isDownloadsFallbackSelected;
     const refreshPlanDisplay = context.refreshPlanDisplay;
+    const hasRetryableFailedTabs = context.hasRetryableFailedTabs;
 
     /**
      * Rebuild the full preview from the current plan.
@@ -393,6 +394,7 @@
       const hasSelectedFolder = Boolean(state.selectedDirectoryHandle && state.selectedDirectoryWritable);
       const hasDestination = hasSelectedFolder || isDownloadsFallbackSelected();
       elements.exportButton.disabled = state.isExporting || !hasPlan || !hasSelection || !hasModeOutput || !hasDestination;
+      elements.retryFailedButton.disabled = state.isExporting || !hasDestination || !hasRetryableFailedTabs();
       elements.stopExportButton.disabled = !state.isExporting || state.stopRequested;
     }
 

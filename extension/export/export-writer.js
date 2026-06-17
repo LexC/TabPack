@@ -18,7 +18,7 @@
   function createExportWriter(context) {
     const { state, elements, ExportHelpers } = context;
     const { ROOT_FOLDER_NAME, CSV_MODE, MHTML_MODE, CSV_FILE_NAME } = context.constants;
-    const { download, permissionsContains, permissionsRequest } = context.browserApi;
+    const { download, permissionsContains, permissionsRequest, removeTab } = context.browserApi;
     const getErrorMessage = context.getErrorMessage;
     const throwIfExportStopped = context.throwIfExportStopped;
     const isExportStopError = context.isExportStopError;
@@ -156,12 +156,14 @@
      * This path is preferred because HTML files and their `_files` folders can be
      * conflict-resolved as a pair before anything is written.
      */
-    async function exportWithFileSystemAccess(plan, result) {
+    async function exportWithFileSystemAccess(plan, result, options = {}) {
       throwIfExportStopped();
       const exportRootHandle = await getExportRootDirectory(state.selectedDirectoryHandle);
 
       if (plan.mode === CSV_MODE) {
-        await exportCsvIndexWithFileSystem(exportRootHandle, plan, result);
+        if (shouldIncludeCsvReport(options)) {
+          await exportCsvIndexWithFileSystem(exportRootHandle, plan, result);
+        }
         return;
       }
 
@@ -214,7 +216,7 @@
         }
       }
 
-      if (shouldExportCsvReport()) {
+      if (shouldIncludeCsvReport(options)) {
         await exportCsvIndexWithFileSystem(exportRootHandle, plan, result);
       }
     }
@@ -237,6 +239,7 @@
         setCounter(elements.successCount, result.success);
         markExportItemsComplete(result);
         logMessage(`Saved ${group.sanitizedFolderName}/${finalFileName}.`, "success");
+        await closeSourceTabIfRequested(group, file);
       } catch (error) {
         if (isExportStopError(error)) {
           throw error;
@@ -310,6 +313,7 @@
           markExportItemsComplete(result);
           logMessage(`Saved ${group.sanitizedFolderName}/${finalFileName}.`, "success");
           logAssetWarnings(htmlPackage.failures, [], group.sanitizedFolderName);
+          await closeSourceTabIfRequested(group, file);
           return;
         }
 
@@ -334,6 +338,7 @@
         markExportItemsComplete(result);
         logMessage(`Saved ${group.sanitizedFolderName}/${outputNames.fileName} and ${group.sanitizedFolderName}/${outputNames.assetFolderName}/.`, "success");
         logAssetWarnings(htmlPackage.failures, writeFailures, `${group.sanitizedFolderName}/${outputNames.assetFolderName}`);
+        await closeSourceTabIfRequested(group, file);
       } catch (error) {
         if (isExportStopError(error)) {
           throw error;
@@ -562,10 +567,12 @@
      * Downloads fallback cannot atomically coordinate HTML/assets conflicts, so
      * it records requested paths instead of final filesystem paths.
      */
-    async function exportWithDownloadsFallback(plan, result) {
+    async function exportWithDownloadsFallback(plan, result, options = {}) {
       throwIfExportStopped();
       if (plan.mode === CSV_MODE) {
-        await exportCsvIndexWithDownloadsFallback(plan, result);
+        if (shouldIncludeCsvReport(options)) {
+          await exportCsvIndexWithDownloadsFallback(plan, result);
+        }
         return;
       }
 
@@ -589,7 +596,7 @@
         }
       }
 
-      if (shouldExportCsvReport()) {
+      if (shouldIncludeCsvReport(options)) {
         await exportCsvIndexWithDownloadsFallback(plan, result);
       }
     }
@@ -611,6 +618,7 @@
         setCounter(elements.successCount, result.success);
         markExportItemsComplete(result);
         logMessage(`Queued fallback download ${filename}.`, "success");
+        await closeSourceTabIfRequested(group, file);
       } catch (error) {
         if (isExportStopError(error)) {
           throw error;
@@ -713,6 +721,7 @@
         } else {
           logMessage(`Queued fallback download ${htmlFilename}.`, "success");
         }
+        await closeSourceTabIfRequested(group, file);
       } catch (error) {
         if (isExportStopError(error)) {
           throw error;
@@ -803,9 +812,26 @@
       });
     }
 
+    function shouldIncludeCsvReport(options = {}) {
+      return options.includeCsvReport !== false && shouldExportCsvReport();
+    }
+
+    async function closeSourceTabIfRequested(group, file) {
+      if (!elements.closeTabsAfterExport || !elements.closeTabsAfterExport.checked) {
+        return;
+      }
+
+      try {
+        await removeTab(file.tabId);
+        logMessage(`Closed source tab for ${group.sanitizedFolderName}/${file.fileName}.`, "progress");
+      } catch (error) {
+        logMessage(`Could not close source tab ${file.tabId}: ${getErrorMessage(error)}`, "warning");
+      }
+    }
+
     /** Count progress units before export starts so the progress bar is stable. */
-    function getExportProgressItemCount(plan) {
-      const reportFileCount = shouldExportCsvReport() ? 1 : 0;
+    function getExportProgressItemCount(plan, options = {}) {
+      const reportFileCount = shouldIncludeCsvReport(options) ? 1 : 0;
       const pageCount = plan.mode === CSV_MODE ? 0 : plan.totalSelectedTabs;
       return pageCount + reportFileCount;
     }

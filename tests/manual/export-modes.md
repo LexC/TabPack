@@ -43,10 +43,19 @@
 ## Filename Modes
 
 - [ ] Keep Numbered filenames selected and confirm files use compact numbers.
+- [ ] Enable Keep original scan numbers, deselect the first tab in a group, and confirm the next selected file keeps its original number such as `2.html`.
 - [ ] Select Page title filenames.
 - [ ] Export pages with duplicate, long, and invalid-character titles.
 - [ ] Confirm title filenames are sanitized, trimmed, and uniquified.
 - [ ] Confirm HTML asset folders use the same title base with `_files`.
+
+## Close And Retry
+
+- [ ] Enable Close tabs after successful export and confirm successfully exported source tabs close.
+- [ ] Confirm failed, deselected, skipped, and CSV-only tabs stay open.
+- [ ] Cause at least one page export failure and confirm Retry failed tabs becomes enabled after the run.
+- [ ] Click Retry failed tabs and confirm only failed page exports are attempted again.
+- [ ] Confirm retry does not write a new `tab-groups.csv` report.
 
 ## Notes
 

@@ -125,14 +125,18 @@ use `Group_<groupId>`. Folder names are sanitized for Windows compatibility, and
 duplicate sanitized group names get a deterministic suffix such as
 `__group_<groupId>`.
 
-Page files are numbered by selected tab order inside each group. If a tab is
-deselected, remaining selected tabs are compactly renumbered:
+Page files are numbered by selected tab order inside each group by default. If a
+tab is deselected, remaining selected tabs are compactly renumbered:
 
 ```text
 1.html
 2.html
 3.html
 ```
+
+Enable **Keep original scan numbers** to preserve the numbering shown at scan
+time. If the first tab is deselected, the next selected tab can remain `2.html`
+instead of becoming `1.html`.
 
 The filename mode can also use page titles. Title filenames are sanitized for
 Windows compatibility, trimmed to 80 characters before the extension, and
@@ -151,6 +155,11 @@ HTML asset modes create paired folders:
 2.html
 2_files/
 ```
+
+Enable **Close tabs after successful export** to close only source tabs whose
+page export succeeds. Failed, deselected, skipped, and CSV-only tabs stay open.
+If page exports fail, **Retry failed tabs** retries only those failed page rows
+from the most recent run without rescanning.
 
 MHTML mode writes:
 

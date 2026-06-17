@@ -98,6 +98,9 @@ test("loads extension, summarizes popup, scans, selects, and previews CSV rows",
     expect(selectedPreviewText.indexOf("Title:")).toBeLessThan(selectedPreviewText.indexOf("File:"));
     await expect(exportPage.getByRole("group", { name: "Filename mode" })).toBeVisible();
     await expect(exportPage.getByRole("group", { name: "Filename conflict behavior" })).toBeVisible();
+    await expect(exportPage.getByLabel("Keep original scan numbers")).not.toBeChecked();
+    await expect(exportPage.getByLabel("Close tabs after successful export")).not.toBeChecked();
+    await expect(exportPage.getByRole("button", { name: "Retry failed tabs" })).toBeDisabled();
     await expect(exportPage.locator("#exportReportCsv")).not.toBeChecked();
     await expect(exportPage.getByRole("heading", { name: "Report CSV" })).toBeVisible();
     const reportPreview = exportPage.locator(".group-preview", {
@@ -105,6 +108,9 @@ test("loads extension, summarizes popup, scans, selects, and previews CSV rows",
     });
     await expect(reportPreview.getByText("Status:")).toBeVisible();
     await expect(reportPreview.getByText("Not exported")).toBeVisible();
+
+    await exportPage.getByLabel("Keep original scan numbers").check();
+    await expect(selectedPreview.getByText("TabPack/E2E Group/2.html")).toBeVisible();
 
     await exportPage.getByRole("button", { name: "Page title filenames" }).click();
     await expect(selectedPreview.getByText("TabPack/E2E Group/_two.html.html")).toBeVisible();

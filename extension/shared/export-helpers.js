@@ -130,7 +130,8 @@
       totalDeselectedTabs: 0,
       csvFileName: CSV_FILE_NAME,
       csvRelativePath: "",
-      filenameMode: FILENAME_MODE_NUMBERED
+      filenameMode: FILENAME_MODE_NUMBERED,
+      preserveOriginalNumbers: false
     };
 
     applyModeAndPaths(plan, options);
@@ -186,10 +187,12 @@
     const filenameMode = options.filenameMode === FILENAME_MODE_TITLE
       ? FILENAME_MODE_TITLE
       : FILENAME_MODE_NUMBERED;
+    const preserveOriginalNumbers = Boolean(options.preserveOriginalNumbers);
     const extension = mode === MHTML_MODE ? "mhtml" : "html";
 
     plan.mode = mode;
     plan.filenameMode = filenameMode;
+    plan.preserveOriginalNumbers = preserveOriginalNumbers;
     plan.csvFileName = CSV_FILE_NAME;
     plan.csvRelativePath = buildRootRelativePath(CSV_FILE_NAME, { rootFolderName, createRootFolder, downloadsFallback });
 
@@ -208,8 +211,11 @@
 
         if (isSelected) {
           selectedOrder += 1;
+          const fileNumber = preserveOriginalNumbers && filenameMode === FILENAME_MODE_NUMBERED
+            ? file.order
+            : selectedOrder;
           file.selectedOrderInGroup = selectedOrder;
-          file.baseFileName = allocatePageBaseFileName(file, selectedOrder, usedBaseNames, {
+          file.baseFileName = allocatePageBaseFileName(file, fileNumber, usedBaseNames, {
             filenameMode,
             titleLimit: TITLE_FILENAME_LIMIT
           });

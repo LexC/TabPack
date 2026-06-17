@@ -43,7 +43,8 @@
     stopRequested: false,
     exportAbortController: null,
     preferencesLoaded: false,
-    optionalHostPermissionsGranted: false
+    optionalHostPermissionsGranted: false,
+    latestExportResult: null
   };
 
   /** @type {TabPackExportElements} */
@@ -75,6 +76,7 @@
     refreshPlanDisplay,
     applyModeAndPaths,
     saveExportPreferences,
+    hasRetryableFailedTabs,
     renderer: null,
     destination: null,
     htmlCapture: null,
@@ -138,6 +140,7 @@
   function bindElements() {
     elements.scanButton = getButtonElement("scanButton");
     elements.exportButton = getButtonElement("exportButton");
+    elements.retryFailedButton = getButtonElement("retryFailedButton");
     elements.stopExportButton = getButtonElement("stopExportButton");
     elements.chooseFolderButton = getButtonElement("chooseFolderButton");
     elements.selectedFolderText = getElement("selectedFolderText");
@@ -148,6 +151,8 @@
     elements.exportReportCsv = getInputElement("exportReportCsv");
     elements.filenameMode = getInputElement("filenameMode");
     elements.filenameModeButtons = /** @type {HTMLButtonElement[]} */ (Array.from(document.querySelectorAll("[data-filename-mode-value]")));
+    elements.preserveOriginalNumbers = getInputElement("preserveOriginalNumbers");
+    elements.closeTabsAfterExport = getInputElement("closeTabsAfterExport");
     elements.conflictBehavior = getInputElement("conflictBehavior");
     elements.conflictButtons = /** @type {HTMLButtonElement[]} */ (Array.from(document.querySelectorAll("[data-conflict-value]")));
     elements.preview = getElement("preview");
@@ -174,6 +179,7 @@
   function bindEvents() {
     elements.scanButton.addEventListener("click", scanGroupedTabs);
     elements.exportButton.addEventListener("click", exportGroupedTabs);
+    elements.retryFailedButton.addEventListener("click", retryFailedTabs);
     elements.stopExportButton.addEventListener("click", stopExport);
     elements.chooseFolderButton.addEventListener("click", destination.chooseOutputFolder);
     elements.createRootFolder.addEventListener("change", () => {
@@ -190,6 +196,11 @@
       renderer.updateExportAvailability();
       refreshPlanDisplay();
     });
+    elements.preserveOriginalNumbers.addEventListener("change", () => {
+      saveExportPreferences();
+      refreshPlanDisplay();
+    });
+    elements.closeTabsAfterExport.addEventListener("change", saveExportPreferences);
 
     for (const input of elements.modeInputs) {
       input.addEventListener("change", () => {
@@ -335,6 +346,14 @@
         setFilenameMode(preferences.filenameMode);
       }
 
+      if (typeof preferences.preserveOriginalNumbers === "boolean") {
+        elements.preserveOriginalNumbers.checked = preferences.preserveOriginalNumbers;
+      }
+
+      if (typeof preferences.closeTabsAfterExport === "boolean") {
+        elements.closeTabsAfterExport.checked = preferences.closeTabsAfterExport;
+      }
+
     } catch (error) {
       renderer.logMessage(`Could not load saved export preferences: ${getErrorMessage(error)}`, "warning");
     } finally {
@@ -353,6 +372,8 @@
         mode: getSelectedMode(),
         conflictBehavior: elements.conflictBehavior.value,
         filenameMode: elements.filenameMode.value,
+        preserveOriginalNumbers: elements.preserveOriginalNumbers.checked,
+        closeTabsAfterExport: elements.closeTabsAfterExport.checked,
         exportReportCsv: elements.exportReportCsv.checked,
         createRootFolder: elements.createRootFolder.checked,
         useDownloadsFallback: elements.useDownloadsFallback.checked
@@ -382,6 +403,7 @@
     elements.exportButton.disabled = true;
     state.exportPlan = null;
     state.skippedTabs = [];
+    state.latestExportResult = null;
     renderer.setCounter(elements.successCount, 0);
     renderer.setCounter(elements.failureCount, 0);
     renderer.setExportProgressIdle("Scan in progress. Export progress will appear when an export starts.");
@@ -481,8 +503,50 @@
       return;
     }
 
+    await runExport(state.exportPlan, {
+      includeCsvReport: true,
+      retry: false
+    });
+  }
+
+  async function retryFailedTabs() {
+    if (!state.exportPlan || state.exportPlan.totalEligibleTabs === 0) {
+      renderer.logMessage("Retry is unavailable until grouped tabs have been scanned.", "warning");
+      renderer.updateExportAvailability();
+      return;
+    }
+
+    applyModeAndPaths(state.exportPlan);
+
+    if (state.exportPlan.mode === CSV_MODE) {
+      renderer.logMessage("Retry failed tabs is only available for page export modes.", "warning");
+      renderer.updateExportAvailability();
+      return;
+    }
+
+    const failedSelectionKeys = getRetryableFailedSelectionKeys();
+    if (failedSelectionKeys.size === 0) {
+      renderer.logMessage("No failed tab exports are available to retry.", "warning");
+      renderer.updateExportAvailability();
+      return;
+    }
+
+    const retryPlan = buildRetryPlan(failedSelectionKeys);
+    await runExport(retryPlan, {
+      includeCsvReport: false,
+      retry: true
+    });
+  }
+
+  /**
+   * Run either a normal export or a failed-tab retry through the same lifecycle.
+   * Retry plans are temporary and do not mutate the preview selection.
+   */
+  async function runExport(plan, options = {}) {
+    const includeCsvReport = options.includeCsvReport !== false;
+
     try {
-      await writer.ensureOptionalPermissionsForExport(state.exportPlan, {
+      await writer.ensureOptionalPermissionsForExport(plan, {
         downloadsFallback: isDownloadsFallbackSelected()
       });
     } catch (error) {
@@ -493,6 +557,7 @@
 
     state.isExporting = true;
     state.stopRequested = false;
+    state.latestExportResult = null;
     state.exportAbortController = typeof AbortController === "function"
       ? new AbortController()
       : null;
@@ -501,7 +566,9 @@
     elements.scanButton.disabled = true;
     renderer.updateExportAvailability();
 
-    renderer.renderPreview();
+    if (!options.retry) {
+      renderer.renderPreview();
+    }
 
     const result = {
       exportedAt: new Date().toISOString(),
@@ -509,7 +576,9 @@
       failure: 0,
       assetWarnings: 0,
       completedItems: 0,
-      totalItems: writer.getExportProgressItemCount(state.exportPlan),
+      totalItems: writer.getExportProgressItemCount(plan, {
+        includeCsvReport
+      }),
       progressUnit: "item",
       pageResults: []
     };
@@ -517,12 +586,16 @@
 
     try {
       if (isDownloadsFallbackSelected()) {
-        renderer.logMessage(`Starting Downloads fallback export to Downloads/${ROOT_FOLDER_NAME}/.`, "start");
-        await writer.exportWithDownloadsFallback(state.exportPlan, result);
+        renderer.logMessage(`${options.retry ? "Retrying failed tabs with" : "Starting"} Downloads fallback export to Downloads/${ROOT_FOLDER_NAME}/.`, "start");
+        await writer.exportWithDownloadsFallback(plan, result, {
+          includeCsvReport
+        });
       } else {
         await destination.ensureSelectedDirectoryReady();
-        renderer.logMessage("Starting selected-folder export with the File System Access API.", "start");
-        await writer.exportWithFileSystemAccess(state.exportPlan, result);
+        renderer.logMessage(`${options.retry ? "Retrying failed tabs with" : "Starting"} selected-folder export with the File System Access API.`, "start");
+        await writer.exportWithFileSystemAccess(plan, result, {
+          includeCsvReport
+        });
       }
 
       const destinationLabel = isDownloadsFallbackSelected()
@@ -531,22 +604,31 @@
       const warningText = result.assetWarnings > 0
         ? ` ${result.assetWarnings} asset warning(s).`
         : "";
+      const skippedText = options.retry
+        ? ""
+        : `, ${plan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped`;
+      const actionLabel = options.retry ? "Retry" : "Export";
       if (state.stopRequested) {
-        renderer.logMessage(`Export stopped by user. ${result.success} item(s) succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.${warningText}`, "warning");
+        renderer.logMessage(`${actionLabel} stopped by user. ${result.success} item(s) succeeded, ${result.failure} failed${skippedText}.${warningText}`, "warning");
         renderer.finishExportProgress(result, "stopped");
       } else {
-        renderer.logMessage(`Export finished to ${destinationLabel}. ${result.success} item(s) succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.${warningText}`, result.failure > 0 ? "warning" : "success");
+        renderer.logMessage(`${actionLabel} finished to ${destinationLabel}. ${result.success} item(s) succeeded, ${result.failure} failed${skippedText}.${warningText}`, result.failure > 0 ? "warning" : "success");
         renderer.finishExportProgress(result, result.failure > 0 ? "warning" : "done");
       }
     } catch (error) {
+      const actionLabel = options.retry ? "Retry" : "Export";
+      const skippedText = options.retry
+        ? ""
+        : `, ${plan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped`;
       if (isExportStopError(error)) {
-        renderer.logMessage(`Export stopped by user. ${result.success} item(s) succeeded, ${result.failure} failed, ${state.exportPlan.totalDeselectedTabs} deselected, ${state.skippedTabs.length} skipped.`, "warning");
+        renderer.logMessage(`${actionLabel} stopped by user. ${result.success} item(s) succeeded, ${result.failure} failed${skippedText}.`, "warning");
         renderer.finishExportProgress(result, "stopped");
       } else {
-        renderer.logMessage(`Export stopped before completion: ${getErrorMessage(error)}`, "error");
+        renderer.logMessage(`${actionLabel} stopped before completion: ${getErrorMessage(error)}`, "error");
         renderer.finishExportProgress(result, "error");
       }
     } finally {
+      state.latestExportResult = result;
       state.isExporting = false;
       state.stopRequested = false;
       state.exportAbortController = null;
@@ -555,6 +637,65 @@
       renderer.setCounter(elements.failureCount, result.failure);
       renderer.updateExportAvailability();
     }
+  }
+
+  function buildRetryPlan(failedSelectionKeys) {
+    const sourcePlan = state.exportPlan;
+    if (!sourcePlan) {
+      throw new Error("Cannot build a retry plan before scanning grouped tabs.");
+    }
+
+    const retryPlan = {
+      ...sourcePlan,
+      groups: sourcePlan.groups.map((group) => ({
+        ...group,
+        files: group.files.map((file) => ({
+          ...file,
+          selected: failedSelectionKeys.has(file.selectionKey)
+        }))
+      })),
+      skippedTabs: [...sourcePlan.skippedTabs]
+    };
+
+    ExportHelpers.applyModeAndPaths(retryPlan, getPathOptions());
+    return retryPlan;
+  }
+
+  function hasRetryableFailedTabs() {
+    return getRetryableFailedSelectionKeys().size > 0;
+  }
+
+  function getRetryableFailedSelectionKeys() {
+    const failedSelectionKeys = getLatestFailedPageSelectionKeys();
+    if (!state.exportPlan || state.exportPlan.mode === CSV_MODE || failedSelectionKeys.size === 0) {
+      return new Set();
+    }
+
+    const currentSelectionKeys = new Set();
+    for (const group of state.exportPlan.groups) {
+      for (const file of group.files) {
+        currentSelectionKeys.add(file.selectionKey);
+      }
+    }
+
+    return new Set(Array.from(failedSelectionKeys).filter((selectionKey) => {
+      return currentSelectionKeys.has(selectionKey);
+    }));
+  }
+
+  function getLatestFailedPageSelectionKeys() {
+    const failedSelectionKeys = new Set();
+    const pageResults = state.latestExportResult && Array.isArray(state.latestExportResult.pageResults)
+      ? state.latestExportResult.pageResults
+      : [];
+
+    for (const pageResult of pageResults) {
+      if (pageResult && pageResult.status === "failed" && pageResult.selectionKey) {
+        failedSelectionKeys.add(pageResult.selectionKey);
+      }
+    }
+
+    return failedSelectionKeys;
   }
 
   /**
@@ -583,6 +724,7 @@
     return {
       mode: getSelectedMode(),
       filenameMode: elements.filenameMode.value,
+      preserveOriginalNumbers: elements.preserveOriginalNumbers.checked,
       rootFolderName: ROOT_FOLDER_NAME,
       createRootFolder: elements.createRootFolder.checked,
       downloadsFallback: isDownloadsFallbackSelected(),

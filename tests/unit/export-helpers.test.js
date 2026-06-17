@@ -64,6 +64,29 @@ test("deselected tabs are compactly renumbered within each group", () => {
   assert.equal(plan.groups[0].files[1].plannedRelativePath, "Research/1.mhtml");
 });
 
+test("preserved original numbers keep filename gaps while selected order stays compact", () => {
+  const selectedKeys = new Set([helpers.makeSelectionKey(10, 2)]);
+  const plan = helpers.buildExportPlanFromTabs(sampleTabs(), sampleGroups(), {
+    noGroupId: -1,
+    mode: constants.MHTML_MODE,
+    createRootFolder: false,
+    selectedKeys,
+    preserveOriginalNumbers: true
+  });
+
+  assert.equal(plan.totalSelectedTabs, 1);
+  assert.equal(plan.groups[0].files[0].selected, false);
+  assert.equal(plan.groups[0].files[1].selectedOrderInGroup, 1);
+  assert.equal(plan.groups[0].files[1].order, 2);
+  assert.equal(plan.groups[0].files[1].fileName, "2.mhtml");
+  assert.equal(plan.groups[0].files[1].plannedRelativePath, "Research/2.mhtml");
+
+  const csv = helpers.generateCsvIndex(plan, {
+    exportedAt: "2026-06-14T00:00:00.000Z"
+  });
+  assert.match(csv, /"mhtml","1","Research","10","1","2","1","2","Beta","https:\/\/example.com\/b","Research\/2.mhtml",""/);
+});
+
 test("CSV index includes only selected rows in a readable order", () => {
   const selectedKeys = new Set([helpers.makeSelectionKey(10, 2)]);
   const plan = helpers.buildExportPlanFromTabs(sampleTabs(), sampleGroups(), {

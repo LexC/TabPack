@@ -55,6 +55,21 @@
     });
   }
 
+  /** @param {number} tabId */
+  function removeTab(tabId) {
+    return new Promise((resolve, reject) => {
+      chrome.tabs.remove(tabId, () => {
+        const errorMessage = getRuntimeErrorMessage();
+        if (errorMessage) {
+          reject(new Error(errorMessage));
+          return;
+        }
+
+        resolve();
+      });
+    });
+  }
+
   /** @param {chrome.downloads.DownloadOptions} options */
   function download(options) {
     return new Promise((resolve, reject) => {
@@ -209,6 +224,7 @@
     createTab,
     queryTabs,
     getTabGroup,
+    removeTab,
     download,
     executeScript,
     executeLegacyTabScript,

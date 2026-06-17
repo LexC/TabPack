@@ -23,6 +23,7 @@ interface TabPackBrowserApi {
   createTab(options: chrome.tabs.CreateProperties): Promise<chrome.tabs.Tab>;
   queryTabs(queryInfo: chrome.tabs.QueryInfo): Promise<chrome.tabs.Tab[]>;
   getTabGroup(groupId: number): Promise<chrome.tabGroups.TabGroup>;
+  removeTab(tabId: number): Promise<void>;
   download(options: chrome.downloads.DownloadOptions): Promise<number>;
   executeScript(options: any): Promise<any[]>;
   executeLegacyTabScript(tabId: number, options: Record<string, unknown>): Promise<unknown[]>;
@@ -85,6 +86,7 @@ interface TabPackExportPlan {
   csvFileName: string;
   csvRelativePath: string;
   filenameMode: string;
+  preserveOriginalNumbers: boolean;
 }
 
 interface TabPackExportResult {
@@ -144,6 +146,7 @@ interface TabPackHtmlPackage {
 interface TabPackExportElements {
   scanButton?: HTMLButtonElement;
   exportButton?: HTMLButtonElement;
+  retryFailedButton?: HTMLButtonElement;
   stopExportButton?: HTMLButtonElement;
   chooseFolderButton?: HTMLButtonElement;
   selectedFolderText?: HTMLElement;
@@ -154,6 +157,8 @@ interface TabPackExportElements {
   exportReportCsv?: HTMLInputElement;
   filenameMode?: HTMLInputElement;
   filenameModeButtons?: HTMLButtonElement[];
+  preserveOriginalNumbers?: HTMLInputElement;
+  closeTabsAfterExport?: HTMLInputElement;
   conflictBehavior?: HTMLInputElement;
   conflictButtons?: HTMLButtonElement[];
   preview?: HTMLElement;
@@ -183,6 +188,7 @@ interface TabPackExportState {
   exportAbortController: AbortController | null;
   preferencesLoaded: boolean;
   optionalHostPermissionsGranted: boolean;
+  latestExportResult: TabPackExportResult | null;
 }
 
 interface TabPackExportHelpersApi {
@@ -245,9 +251,9 @@ interface TabPackHtmlCaptureApi {
 
 interface TabPackExportWriterApi {
   ensureOptionalPermissionsForExport(plan: TabPackExportPlan, options?: { downloadsFallback?: boolean }): Promise<void>;
-  exportWithFileSystemAccess(plan: TabPackExportPlan, result: TabPackExportResult): Promise<void>;
-  exportWithDownloadsFallback(plan: TabPackExportPlan, result: TabPackExportResult): Promise<void>;
-  getExportProgressItemCount(plan: TabPackExportPlan): number;
+  exportWithFileSystemAccess(plan: TabPackExportPlan, result: TabPackExportResult, options?: { includeCsvReport?: boolean }): Promise<void>;
+  exportWithDownloadsFallback(plan: TabPackExportPlan, result: TabPackExportResult, options?: { includeCsvReport?: boolean }): Promise<void>;
+  getExportProgressItemCount(plan: TabPackExportPlan, options?: { includeCsvReport?: boolean }): number;
 }
 
 interface TabPackExportContext {
@@ -269,6 +275,7 @@ interface TabPackExportContext {
   refreshPlanDisplay(): void;
   applyModeAndPaths(plan: TabPackExportPlan): void;
   saveExportPreferences(): void;
+  hasRetryableFailedTabs(): boolean;
   renderer: TabPackExportRendererApi | null;
   destination: TabPackExportDestinationApi | null;
   htmlCapture: TabPackHtmlCaptureApi | null;

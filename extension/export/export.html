@@ -16,6 +16,7 @@
         <div class="row">
           <button id="scanButton" type="button" disabled>Scan grouped tabs</button>
           <button id="exportButton" class="primary" type="button" disabled>Export grouped tabs</button>
+          <button id="retryFailedButton" type="button" disabled>Retry failed tabs</button>
           <button id="stopExportButton" class="danger" type="button" disabled>Stop export</button>
         </div>
       </header>
@@ -89,6 +90,10 @@
                   <button type="button" data-filename-mode-value="numbered" aria-pressed="true">Numbered filenames</button>
                   <button type="button" data-filename-mode-value="title" aria-pressed="false">Page title filenames</button>
                 </div>
+                <label>
+                  <input id="preserveOriginalNumbers" type="checkbox">
+                  Keep original scan numbers
+                </label>
               </div>
 
               <div class="output-section">
@@ -98,6 +103,14 @@
                   <button type="button" data-conflict-value="uniquify" aria-pressed="true">Uniquify existing files</button>
                   <button type="button" data-conflict-value="overwrite" aria-pressed="false">Overwrite existing files</button>
                 </div>
+              </div>
+
+              <div class="output-section">
+                <h3>After export</h3>
+                <label>
+                  <input id="closeTabsAfterExport" type="checkbox">
+                  Close tabs after successful export
+                </label>
               </div>
             </div>
           </fieldset>
